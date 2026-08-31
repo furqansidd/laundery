@@ -28,7 +28,7 @@ import { supabase } from "../lib/supabase";
 import {
   buildReceiptMessage,
   sendWhatsAppReceipt,
-  shareRealPhotosAndReceipt,
+  sharePdfInvoiceWithPhotos,
 } from "../utils/whatsapp";
 import { printBarcodeLabel } from "../utils/print";
 
@@ -222,26 +222,27 @@ export default function IntakeScreen({ navigation }) {
     }
   };
 
-  // Share real photos + formatted invoice to client via WhatsApp
-  const handleShareInvoiceAndPhotos = async () => {
-    const photoList = createdOrder?.local_photos || photos;
+  // Send formatted WhatsApp receipt with photo links directly to customer
+  const handleSendWhatsAppReceipt = async () => {
     const message = buildReceiptMessage({
       order: createdOrder,
-      items: createdOrder.items || [],
-      photoUrls: createdOrder.intake_photo_urls || [],
+      items: createdOrder?.items || [],
+      photoUrls: createdOrder?.intake_photo_urls || [],
     });
 
-    if (photoList && photoList.length > 0) {
-      await shareRealPhotosAndReceipt({
-        photoUris: photoList,
-        message,
-      });
-    } else {
-      await sendWhatsAppReceipt({
-        phoneNumber: createdOrder.customer_phone || phone.trim(),
-        message,
-      });
-    }
+    await sendWhatsAppReceipt({
+      phoneNumber: createdOrder?.customer_phone || phone.trim(),
+      message,
+    });
+  };
+
+  // Generate and share PDF invoice containing order details & both photos
+  const handleSharePdfInvoice = async () => {
+    await sharePdfInvoiceWithPhotos({
+      order: createdOrder,
+      items: createdOrder?.items || [],
+      photoUrls: createdOrder?.intake_photo_urls || [],
+    });
   };
 
   // Print barcode sticker
@@ -357,17 +358,27 @@ export default function IntakeScreen({ navigation }) {
             />
           </View>
 
-          {/* Action Button 1: Share Invoice & Photos to Client */}
+          {/* Action Button 1: Send WhatsApp Text Receipt with Both Photos */}
           <TouchableOpacity
-            style={[styles.primaryBtn, shadow, { marginTop: spacing.md }]}
-            onPress={handleShareInvoiceAndPhotos}
+            style={[styles.primaryBtn, shadow, { marginTop: spacing.md, backgroundColor: "#25D366" }]}
+            onPress={handleSendWhatsAppReceipt}
           >
             <Text style={styles.primaryBtnText}>
-              📲 Share Invoice & Photos to Client
+              💬 Send Receipt via WhatsApp
             </Text>
           </TouchableOpacity>
 
-          {/* Action Button 2: Print Barcode Tag */}
+          {/* Action Button 2: Share Full PDF Invoice (with Both Photos Embedded) */}
+          <TouchableOpacity
+            style={[styles.primaryBtn, shadow, { marginTop: spacing.sm, backgroundColor: colors.primary }]}
+            onPress={handleSharePdfInvoice}
+          >
+            <Text style={styles.primaryBtnText}>
+              📄 Share PDF Receipt (with Both Photos)
+            </Text>
+          </TouchableOpacity>
+
+          {/* Action Button 3: Print Barcode Tag */}
           <TouchableOpacity
             style={styles.printBtn}
             onPress={handlePrintBarcode}

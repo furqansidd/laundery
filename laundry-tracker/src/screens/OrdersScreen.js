@@ -18,6 +18,11 @@ import { colors, radius, spacing, typography, shadow } from "../theme";
 import { fetchAllOrders, updateOrderStatus } from "../lib/ordersApi";
 import BarcodeLabel from "../components/BarcodeLabel";
 import PhotoViewerModal from "../components/PhotoViewerModal";
+import {
+  buildReceiptMessage,
+  sendWhatsAppReceipt,
+  sharePdfInvoiceWithPhotos,
+} from "../utils/whatsapp";
 
 const STATUS_FILTERS = [
   { key: "all", label: "All" },
@@ -92,6 +97,36 @@ export default function OrdersScreen() {
     } catch (e) {
       Alert.alert("Failed to update status", e.message);
     }
+  };
+
+  const handleSendWhatsApp = async () => {
+    if (!selectedOrder) return;
+    const message = buildReceiptMessage({
+      order: selectedOrder,
+      items: (selectedOrder.order_items || []).map((i) => ({
+        name: i.item_types?.name || "Garment",
+        quantity: i.quantity,
+        unit_price: i.unit_price,
+      })),
+      photoUrls: selectedOrder.intake_photo_urls || [],
+    });
+    await sendWhatsAppReceipt({
+      phoneNumber: selectedOrder.customers?.phone_number || "",
+      message,
+    });
+  };
+
+  const handleSharePdf = async () => {
+    if (!selectedOrder) return;
+    await sharePdfInvoiceWithPhotos({
+      order: selectedOrder,
+      items: (selectedOrder.order_items || []).map((i) => ({
+        name: i.item_types?.name || "Garment",
+        quantity: i.quantity,
+        unit_price: i.unit_price,
+      })),
+      photoUrls: selectedOrder.intake_photo_urls || [],
+    });
   };
 
   const renderOrderItem = ({ item }) => {
@@ -354,6 +389,22 @@ export default function OrdersScreen() {
                   </View>
                 </View>
               )}
+
+              {/* Receipt Sharing Actions */}
+              <View style={[styles.statusActionRow, { marginTop: spacing.sm, marginBottom: 2 }]}>
+                <TouchableOpacity
+                  style={[styles.statusBtn, { backgroundColor: "#25D366", flex: 1 }]}
+                  onPress={handleSendWhatsApp}
+                >
+                  <Text style={styles.statusBtnText}>💬 WhatsApp Receipt</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.statusBtn, { backgroundColor: colors.primary, flex: 1 }]}
+                  onPress={handleSharePdf}
+                >
+                  <Text style={styles.statusBtnText}>📄 PDF Receipt</Text>
+                </TouchableOpacity>
+              </View>
 
               {/* Status Advancement Actions */}
               <View style={styles.statusActionRow}>
