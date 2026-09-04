@@ -12,6 +12,21 @@ create table if not exists customers (
   id uuid primary key default gen_random_uuid(),
   phone_number text not null unique,
   name text,
+  address text,
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+-- -------------------------------------------------------------
+-- 1B. CUSTOMER PAYMENTS (Ledger Settlements)
+-- -------------------------------------------------------------
+create table if not exists customer_payments (
+  id uuid primary key default gen_random_uuid(),
+  customer_id uuid not null references customers(id) on delete cascade,
+  amount numeric(10,2) not null default 0,
+  payment_mode text default 'cash',
+  note text,
+  created_by text default 'staff',
   created_at timestamptz not null default now()
 );
 
@@ -26,6 +41,13 @@ create table if not exists orders (
   customer_id uuid not null references customers(id) on delete restrict,
   status text not null default 'intake'
     check (status in ('intake', 'washing', 'sorting', 'ready_for_delivery', 'delivered', 'cancelled')),
+  order_type text not null default 'normal' check (order_type in ('normal', 'express', 'urgent')),
+  sla_tier text not null default 'standard_48_72h' check (sla_tier in ('express_2_4h', 'fast_24h', 'standard_48_72h')),
+  target_timestamp timestamptz,
+  payment_status text not null default 'unpaid' check (payment_status in ('paid', 'unpaid', 'partial')),
+  tags_count int not null default 1,
+  delivery_date date,
+  delivery_time_slot text,
   total_item_count int not null default 0,
   total_bill_amount numeric(10,2) not null default 0,
   intake_photo_urls text[] not null default '{}',   -- the 2 wide-angle photos
@@ -39,26 +61,30 @@ create table if not exists orders (
 
 create index if not exists idx_orders_status on orders(status);
 create index if not exists idx_orders_customer on orders(customer_id);
+create index if not exists idx_orders_type on orders(order_type);
 
 -- -------------------------------------------------------------
 -- 3. ITEM TYPES (reference list for the tap-counter UI)
 -- -------------------------------------------------------------
 create table if not exists item_types (
   id serial primary key,
-  name text not null unique,          -- e.g. "Shirt", "Pant", "Bed Sheet"
+  name text not null unique,          -- e.g. "Shirt", "Pant", "Bed Sheet", "Quilt (Kg)"
+  unit_type text not null default 'piece' check (unit_type in ('piece', 'pair', 'bundle', 'kg')),
   default_price numeric(10,2) not null default 0,
   sort_order int not null default 0
 );
 
-insert into item_types (name, default_price, sort_order) values
-  ('Shirt', 40, 1),
-  ('Pant', 50, 2),
-  ('Kurta', 60, 3),
-  ('Bed Sheet', 100, 4),
-  ('Towel', 30, 5),
-  ('Blanket', 200, 6),
-  ('Suit', 300, 7),
-  ('Saree', 150, 8)
+insert into item_types (name, unit_type, default_price, sort_order) values
+  ('Shirt', 'piece', 40, 1),
+  ('Pant', 'piece', 50, 2),
+  ('Kurta', 'piece', 60, 3),
+  ('Bed Sheet', 'piece', 100, 4),
+  ('Towel', 'piece', 30, 5),
+  ('Blanket (Kg)', 'kg', 120, 6),
+  ('Socks (Pair)', 'pair', 40, 7),
+  ('Family Bundle', 'bundle', 800, 8),
+  ('Suit', 'piece', 300, 9),
+  ('Saree', 'piece', 150, 10)
 on conflict (name) do nothing;
 
 -- -------------------------------------------------------------
@@ -68,7 +94,11 @@ create table if not exists order_items (
   id uuid primary key default gen_random_uuid(),
   order_id uuid not null references orders(id) on delete cascade,
   item_type_id int not null references item_types(id),
-  quantity int not null check (quantity >= 0),
+  service_type text not null default 'wash_press' check (service_type in ('wash_press', 'press_only', 'dry_clean', 'wash_fold')),
+  unit_type text not null default 'piece' check (unit_type in ('piece', 'pair', 'bundle', 'kg')),
+  quantity int not null default 1 check (quantity >= 0),
+  weight_kg numeric(8,2) default 0,
+  pair_count int default 0,
   unit_price numeric(10,2) not null default 0
 );
 

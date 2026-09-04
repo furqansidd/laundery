@@ -13,9 +13,12 @@ import {
   SafeAreaView,
   Modal,
   ScrollView,
+  Platform,
+  StatusBar,
 } from "react-native";
-import { colors, radius, spacing, typography, shadow } from "../theme";
-import { fetchAllOrders, updateOrderStatus } from "../lib/ordersApi";
+import { useFocusEffect } from "@react-navigation/native";
+import { colors, radius, spacing, typography, shadow, getStatusBadgeStyle } from "../theme";
+import { fetchAllOrders, updateOrderStatus, moveServiceStage, completeServiceStage, markOrderDeliveredWithPayment } from "../lib/ordersApi";
 import BarcodeLabel from "../components/BarcodeLabel";
 import PhotoViewerModal from "../components/PhotoViewerModal";
 import {
@@ -25,23 +28,85 @@ import {
 } from "../utils/whatsapp";
 
 const STATUS_FILTERS = [
-  { key: "all", label: "All" },
-  { key: "intake", label: "Intake" },
-  { key: "washing", label: "Washing" },
-  { key: "ready_for_delivery", label: "Ready" },
-  { key: "delivered", label: "Delivered" },
+  { key: "all", label: "All 📋" },
+  { key: "intake", label: "Intake 🧺" },
+  { key: "washing", label: "Washing 🧼" },
+  { key: "wash_press", label: "Wash & Press 🧺" },
+  { key: "press_only", label: "Pressing 👔" },
+  { key: "dry_clean", label: "Dry Clean 🧪" },
+  { key: "wash_fold", label: "Wash & Fold 🧼" },
+  { key: "ready_for_delivery", label: "Ready 📦" },
+  { key: "delivered", label: "Delivered ✅" },
 ];
 
 const STATUS_COLORS = {
-  intake: { bg: "#FEF3C7", text: "#D97706", label: "Intake" },
-  washing: { bg: "#DBEAFE", text: "#2563EB", label: "Washing" },
-  sorting: { bg: "#F3E8FF", text: "#9333EA", label: "Sorting" },
-  ready_for_delivery: { bg: "#DCFCE7", text: "#16A34A", label: "Ready" },
-  delivered: { bg: "#E2E8F0", text: "#475569", label: "Delivered" },
-  cancelled: { bg: "#FEE2E2", text: "#DC2626", label: "Cancelled" },
+  intake: { bg: "#FFFBEB", text: "#D97706", label: "Intake 🧺" },
+  wash_press: { bg: "#EFF6FF", text: "#2563EB", label: "Wash & Press 🧺" },
+  washing: { bg: "#EFF6FF", text: "#2563EB", label: "Washing 🧼" },
+  press_only: { bg: "#F0F9FF", text: "#0284C7", label: "Pressing 👔" },
+  dry_clean: { bg: "#F5F3FF", text: "#7C3AED", label: "Dry Clean 🧪" },
+  wash_fold: { bg: "#F0FDFA", text: "#0D9488", label: "Wash & Fold 🧼" },
+  sorting: { bg: "#F5F3FF", text: "#8B5CF6", label: "Sorting / Tag Verification 🔍" },
+  ready_for_delivery: { bg: "#ECFDF5", text: "#10B981", label: "Ready 📦" },
+  delivered: { bg: "#F1F5F9", text: "#64748B", label: "Delivered ✅" },
+  cancelled: { bg: "#FEF2F2", text: "#EF4444", label: "Cancelled ✕" },
 };
 
-export default function OrdersScreen() {
+const getServiceStageButtons = (orderObj, currentTab = "all") => {
+  if (
+    orderObj?.status === "ready_for_delivery" ||
+    orderObj?.status === "delivered" ||
+    orderObj?.status === "cancelled"
+  ) {
+    return [];
+  }
+
+  const items = orderObj?.order_items || [];
+  const services = new Set(items.map((i) => i.service_type));
+  const movedServices = new Set(orderObj?.moved_services || []);
+  const completedServices = new Set(orderObj?.completed_services || []);
+
+  const serviceKeys = ["wash_press", "press_only", "dry_clean", "wash_fold"];
+  const isSpecificTab = serviceKeys.includes(currentTab);
+
+  let targetServices = isSpecificTab ? [currentTab] : Array.from(services);
+
+  const buttons = [];
+
+  targetServices.forEach((sKey) => {
+    if (!services.has(sKey)) return;
+
+    if (sKey === "wash_press") {
+      if (!movedServices.has("wash_press")) {
+        buttons.push({ key: "wash_press", actionType: "move", label: "🧺 Move to Wash & Press", bg: "#2563EB" });
+      } else if (!completedServices.has("wash_press")) {
+        buttons.push({ key: "wash_press", actionType: "complete", label: "✓ Mark Wash & Press Ready", bg: "#16A34A" });
+      }
+    } else if (sKey === "dry_clean") {
+      if (!movedServices.has("dry_clean")) {
+        buttons.push({ key: "dry_clean", actionType: "move", label: "🧪 Move to Dry Clean", bg: "#7C3AED" });
+      } else if (!completedServices.has("dry_clean")) {
+        buttons.push({ key: "dry_clean", actionType: "complete", label: "✓ Mark Dry Clean Ready", bg: "#16A34A" });
+      }
+    } else if (sKey === "press_only") {
+      if (!movedServices.has("press_only")) {
+        buttons.push({ key: "press_only", actionType: "move", label: "👔 Move to Pressing", bg: "#0284C7" });
+      } else if (!completedServices.has("press_only")) {
+        buttons.push({ key: "press_only", actionType: "complete", label: "✓ Mark Pressing Ready", bg: "#16A34A" });
+      }
+    } else if (sKey === "wash_fold") {
+      if (!movedServices.has("wash_fold")) {
+        buttons.push({ key: "wash_fold", actionType: "move", label: "🧼 Move to Wash & Fold", bg: "#0D9488" });
+      } else if (!completedServices.has("wash_fold")) {
+        buttons.push({ key: "wash_fold", actionType: "complete", label: "✓ Mark Wash & Fold Ready", bg: "#16A34A" });
+      }
+    }
+  });
+
+  return buttons;
+};
+
+export default function OrdersScreen({ navigation }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -50,10 +115,51 @@ export default function OrdersScreen() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
 
+  // Delivery Cash Collection modal state
+  const [deliverModalVisible, setDeliverModalVisible] = useState(false);
+  const [deliveryTargetOrder, setDeliveryTargetOrder] = useState(null);
+  const [delivering, setDelivering] = useState(false);
+
   // Photo viewer modal state
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerPhotos, setViewerPhotos] = useState([]);
   const [viewerIndex, setViewerIndex] = useState(0);
+
+  const handleOpenDeliveryModal = (orderObj) => {
+    setDeliveryTargetOrder(orderObj);
+    setDeliverModalVisible(true);
+  };
+
+  const handleExecuteDelivery = async (payStatus) => {
+    if (!deliveryTargetOrder) return;
+    setDelivering(true);
+    try {
+      const bill = Number(deliveryTargetOrder.total_bill_amount) || 0;
+      await markOrderDeliveredWithPayment({
+        orderId: deliveryTargetOrder.id,
+        paymentStatus: payStatus,
+        cashAmount: payStatus === "paid" ? bill : 0,
+        createdBy: "staff",
+      });
+      setDeliverModalVisible(false);
+      if (selectedOrder && selectedOrder.id === deliveryTargetOrder.id) {
+        setSelectedOrder(null);
+        setModalVisible(false);
+      }
+      setDeliveryTargetOrder(null);
+      Alert.alert(
+        "Order Delivered! 🚚",
+        payStatus === "paid"
+          ? `Collected Rs ${bill} cash & marked order PAID!`
+          : `Order delivered and added to customer's Udhaar Khata.`
+      );
+      loadOrders();
+    } catch (e) {
+      Alert.alert("Delivery Error", e.message);
+    } finally {
+      setDelivering(false);
+    }
+  };
 
   const loadOrders = useCallback(async () => {
     try {
@@ -67,9 +173,16 @@ export default function OrdersScreen() {
     }
   }, [statusFilter, searchQuery]);
 
+  useFocusEffect(
+    useCallback(() => {
+      loadOrders();
+    }, [loadOrders])
+  );
+
   useEffect(() => {
     loadOrders();
   }, [loadOrders]);
+
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -86,10 +199,33 @@ export default function OrdersScreen() {
     setViewerVisible(true);
   };
 
-  const handleStatusChange = async (orderId, newStatus) => {
+  const handleStatusChange = async (orderId, newStatus, customOrderObj = null, customLabel = null, actionType = "move") => {
     try {
-      await updateOrderStatus(orderId, newStatus, `Updated to ${newStatus}`, "staff");
-      Alert.alert("Status Updated", `Order marked as ${newStatus}`);
+      let statusLabel = customLabel || newStatus;
+      const isServiceKey = ["wash_press", "press_only", "dry_clean", "wash_fold"].includes(newStatus);
+
+      if (isServiceKey) {
+        if (actionType === "complete") {
+          await completeServiceStage(orderId, newStatus, "staff");
+          Alert.alert("Stage Ready ✨", `${statusLabel} marked Ready!`);
+        } else {
+          await moveServiceStage(orderId, newStatus, "staff");
+          Alert.alert("Stage Dispatched 🚀", `Order items moved to ${statusLabel}!`);
+        }
+      } else {
+        if (!customLabel) {
+          if (newStatus === "washing") {
+            statusLabel = "Washing & Processing 🧺";
+          } else if (newStatus === "ready_for_delivery") {
+            statusLabel = "Ready for Delivery 📦";
+          } else if (newStatus === "delivered") {
+            statusLabel = "Delivered & Closed 🚚";
+          }
+        }
+        await updateOrderStatus(orderId, newStatus, `Moved to ${statusLabel}`, "staff");
+        Alert.alert("Status Updated ✨", `Order successfully moved to ${statusLabel}!`);
+      }
+
       if (selectedOrder && selectedOrder.id === orderId) {
         setSelectedOrder((prev) => ({ ...prev, status: newStatus }));
       }
@@ -104,7 +240,8 @@ export default function OrdersScreen() {
     const message = buildReceiptMessage({
       order: selectedOrder,
       items: (selectedOrder.order_items || []).map((i) => ({
-        name: i.item_types?.name || "Garment",
+        name: i.item_types?.name || i.name || "Garment",
+        service_type: i.service_type || "wash_press",
         quantity: i.quantity,
         unit_price: i.unit_price,
       })),
@@ -121,7 +258,8 @@ export default function OrdersScreen() {
     await sharePdfInvoiceWithPhotos({
       order: selectedOrder,
       items: (selectedOrder.order_items || []).map((i) => ({
-        name: i.item_types?.name || "Garment",
+        name: i.item_types?.name || i.name || "Garment",
+        service_type: i.service_type || "wash_press",
         quantity: i.quantity,
         unit_price: i.unit_price,
       })),
@@ -145,6 +283,10 @@ export default function OrdersScreen() {
         })
       : "";
 
+    const speedType = item.order_type || "normal";
+    const isUrgent = speedType === "urgent";
+    const isExpress = speedType === "express";
+
     return (
       <View style={[styles.card, shadow]}>
         {/* Clickable Card Header & Info */}
@@ -160,10 +302,24 @@ export default function OrdersScreen() {
               <Text style={styles.orderCode}>{item.order_code}</Text>
               <Text style={styles.dateText}>{orderDate}</Text>
             </View>
-            <View style={[styles.statusBadge, { backgroundColor: statusCfg.bg }]}>
-              <Text style={[styles.statusText, { color: statusCfg.text }]}>
-                {statusCfg.label}
-              </Text>
+            <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+              {(isUrgent || isExpress) && (
+                <View
+                  style={[
+                    styles.speedBadge,
+                    isUrgent ? styles.badgeUrgent : styles.badgeExpress,
+                  ]}
+                >
+                  <Text style={styles.speedBadgeText}>
+                    {isUrgent ? "🔥 URGENT" : "⚡ EXPRESS"}
+                  </Text>
+                </View>
+              )}
+              <View style={[styles.statusBadge, { backgroundColor: statusCfg.bg }]}>
+                <Text style={[styles.statusText, { color: statusCfg.text }]}>
+                  {statusCfg.label}
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -176,10 +332,95 @@ export default function OrdersScreen() {
             </Text>
           </View>
 
-          <View style={styles.summaryRow}>
-            <Text style={styles.piecesText}>
-              {item.total_item_count} items
+          {item.delivery_date && (
+            <Text style={styles.delDateText}>
+              📅 Promised: {item.delivery_date} ({item.delivery_time_slot || "Anytime"})
             </Text>
+          )}
+
+          {/* Garment Services Breakdown Badges */}
+          {(() => {
+            const serviceKeys = ["wash_press", "press_only", "dry_clean", "wash_fold"];
+            const isSpecificTab = serviceKeys.includes(statusFilter);
+            const items = isSpecificTab
+              ? (item.order_items || []).filter((it) => (it.service_type || "wash_press") === statusFilter)
+              : item.order_items || [];
+            const movedServices = new Set(item.moved_services || []);
+            const completedServices = new Set(item.completed_services || []);
+
+            const servicesList = Array.from(
+              new Set(items.map((it) => {
+                switch (it.service_type) {
+                  case "press_only": return { key: "press_only", name: "👔 Press Only" };
+                  case "dry_clean": return { key: "dry_clean", name: "🧪 Dry Clean" };
+                  case "wash_fold": return { key: "wash_fold", name: "🧼 Wash & Fold" };
+                  case "wash_press": default: return { key: "wash_press", name: "🧺 Wash & Press" };
+                }
+              }))
+            );
+            if (servicesList.length === 0) return null;
+            return (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                {servicesList.map((svcObj, sIdx) => {
+                  const isMoved = movedServices.has(svcObj.key);
+                  const isDone = completedServices.has(svcObj.key);
+
+                  let bg = "#FFFBEB";
+                  let border = "#FDE68A";
+                  let color = "#B45309";
+                  let labelText = `${svcObj.name} ⌛ (Pending Intake)`;
+
+                  if (isDone) {
+                    bg = "#DCFCE7";
+                    border = "#86EFAC";
+                    color = "#15803D";
+                    labelText = `${svcObj.name} ✅ (Ready)`;
+                  } else if (isMoved) {
+                    bg = "#EFF6FF";
+                    border = "#BFDBFE";
+                    color = "#1D4ED8";
+                    labelText = `${svcObj.name} ⏳ (Processing)`;
+                  }
+
+                  return (
+                    <View
+                      key={sIdx}
+                      style={{
+                        backgroundColor: bg,
+                        paddingHorizontal: 6,
+                        paddingVertical: 2,
+                        borderRadius: 4,
+                        borderWidth: 1,
+                        borderColor: border,
+                      }}
+                    >
+                      <Text style={{ fontSize: 10, fontWeight: "700", color: color }}>
+                        {labelText}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            );
+          })()}
+
+          <View style={styles.summaryRow}>
+            {(() => {
+              const serviceKeys = ["wash_press", "press_only", "dry_clean", "wash_fold"];
+              const isSpecificTab = serviceKeys.includes(statusFilter);
+              const items = isSpecificTab
+                ? (item.order_items || []).filter((it) => (it.service_type || "wash_press") === statusFilter)
+                : item.order_items || [];
+              const tabItemCount = isSpecificTab
+                ? items.reduce((sum, i) => sum + (i.quantity || 1), 0)
+                : item.total_item_count;
+
+              return (
+                <Text style={styles.piecesText}>
+                  {tabItemCount} {isSpecificTab ? "item in stage" : "items"}
+                </Text>
+              );
+            })()}
             <Text style={styles.amountText}>
               Rs {Number(item.total_bill_amount || 0).toFixed(0)}
             </Text>
@@ -205,6 +446,55 @@ export default function OrdersScreen() {
             </View>
           </View>
         )}
+
+        {/* Quick Stage Advancement Action Bar */}
+        {(() => {
+          const moveBtns = getServiceStageButtons(item, statusFilter);
+          const isFinalStage = item.status === "ready_for_delivery" || item.status === "delivered";
+
+          return (
+            <View style={{ flexDirection: "row", gap: 6, marginTop: spacing.sm, paddingTop: spacing.xs, borderTopWidth: 1, borderTopColor: colors.border, flexWrap: "wrap" }}>
+              {!isFinalStage && (
+                <>
+                  {moveBtns.map((btn) => (
+                    <TouchableOpacity
+                      key={btn.key + "_" + btn.actionType}
+                      style={{ flex: 1, minWidth: 120, backgroundColor: btn.bg, paddingVertical: 8, paddingHorizontal: 6, borderRadius: radius.xs, alignItems: "center" }}
+                      onPress={() => handleStatusChange(item.id, btn.key, item, btn.label.replace("Move to ", "").replace("✓ Mark ", ""), btn.actionType)}
+                    >
+                      <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "800" }}>{btn.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+
+              {item.status === "ready_for_delivery" && (
+                <>
+                  <TouchableOpacity
+                    style={{ flex: 1, backgroundColor: "#7C3AED", paddingVertical: 8, borderRadius: radius.xs, alignItems: "center" }}
+                    onPress={() => navigation?.navigate("SortingTab", { orderCode: item.order_code })}
+                  >
+                    <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "800" }}>🔍 Verify & Assemble Order</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{ flex: 1, backgroundColor: "#334155", paddingVertical: 8, borderRadius: radius.xs, alignItems: "center" }}
+                    onPress={() => handleOpenDeliveryModal(item)}
+                  >
+                    <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "800" }}>🚚 Deliver & Collect Cash</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+
+              {item.status === "delivered" && (
+                <View style={{ flex: 1, backgroundColor: "#F1F5F9", paddingVertical: 6, borderRadius: radius.xs, alignItems: "center" }}>
+                  <Text style={{ color: "#64748B", fontSize: 11, fontWeight: "800" }}>
+                    ✅ Order Delivered ({item.payment_status === "paid" ? "PAID CASH" : "UNPAID ACCOUNT"})
+                  </Text>
+                </View>
+              )}
+            </View>
+          );
+        })()}
       </View>
     );
   };
@@ -252,12 +542,9 @@ export default function OrdersScreen() {
       </View>
 
       {/* Orders List */}
-      {loading ? (
-        <View style={styles.center}>
+      {loading && !refreshing ? (
+        <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={[typography.caption, { marginTop: spacing.sm }]}>
-            Loading orders…
-          </Text>
         </View>
       ) : (
         <FlatList
@@ -270,11 +557,7 @@ export default function OrdersScreen() {
           }
           ListEmptyComponent={
             <View style={styles.emptyState}>
-              <Text style={{ fontSize: 40, marginBottom: spacing.sm }}>📋</Text>
-              <Text style={typography.h2}>No orders found</Text>
-              <Text style={typography.caption}>
-                Try adjusting your search or filter criteria.
-              </Text>
+              <Text style={styles.emptyText}>No orders found.</Text>
             </View>
           }
         />
@@ -348,14 +631,29 @@ export default function OrdersScreen() {
               <View style={[styles.detailCard, shadow, { flex: 1 }]}>
                 <Text style={styles.detailCardTitle}>GARMENT BREAKDOWN</Text>
                 <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                  {(selectedOrder.order_items || []).map((it, idx) => (
-                    <View key={idx} style={styles.itemRow}>
-                      <Text style={styles.itemName}>
-                        • {it.item_types?.name || "Garment"}
-                      </Text>
-                      <Text style={styles.itemQty}>x{it.quantity}</Text>
-                    </View>
-                  ))}
+                  {(selectedOrder.order_items || []).map((it, idx) => {
+                    const getSvcBadge = (sKey) => {
+                      switch (sKey) {
+                        case "press_only": return "👔 Press Only";
+                        case "dry_clean": return "🧪 Dry Clean";
+                        case "wash_fold": return "🧼 Wash & Fold";
+                        case "wash_press": default: return "🧺 Wash & Press";
+                      }
+                    };
+                    return (
+                      <View key={idx} style={[styles.itemRow, { alignItems: "center" }]}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.itemName}>
+                            • {it.item_types?.name || it.name || "Garment"}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: colors.primary, fontWeight: "700", marginLeft: 10 }}>
+                            {getSvcBadge(it.service_type)}
+                          </Text>
+                        </View>
+                        <Text style={styles.itemQty}>x{it.quantity || 1}</Text>
+                      </View>
+                    );
+                  })}
                 </ScrollView>
                 <View style={styles.totalRow}>
                   <Text style={styles.totalLabel}>
@@ -407,30 +705,43 @@ export default function OrdersScreen() {
               </View>
 
               {/* Status Advancement Actions */}
-              <View style={styles.statusActionRow}>
-                {selectedOrder.status !== "ready_for_delivery" && (
-                  <TouchableOpacity
-                    style={[styles.statusBtn, { backgroundColor: "#16A34A" }]}
-                    onPress={() =>
-                      handleStatusChange(selectedOrder.id, "ready_for_delivery")
-                    }
-                  >
-                    <Text style={styles.statusBtnText}>
-                      Mark Ready for Delivery
-                    </Text>
-                  </TouchableOpacity>
-                )}
-                {selectedOrder.status !== "delivered" && (
-                  <TouchableOpacity
-                    style={[styles.statusBtn, { backgroundColor: "#334155" }]}
-                    onPress={() =>
-                      handleStatusChange(selectedOrder.id, "delivered")
-                    }
-                  >
-                    <Text style={styles.statusBtnText}>Mark Delivered</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
+              {(() => {
+                const moveBtns = getServiceStageButtons(selectedOrder);
+                return (
+                  <View style={styles.statusActionRow}>
+                    {moveBtns.map((btn) => (
+                      <TouchableOpacity
+                        key={btn.key + "_" + btn.actionType}
+                        style={[styles.statusBtn, { backgroundColor: btn.bg, flex: 1 }]}
+                        onPress={() =>
+                          handleStatusChange(selectedOrder.id, btn.key, selectedOrder, btn.label.replace("Move to ", "").replace("✓ Mark ", ""), btn.actionType)
+                        }
+                      >
+                        <Text style={styles.statusBtnText}>{btn.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    {selectedOrder.status === "ready_for_delivery" && (
+                      <>
+                        <TouchableOpacity
+                          style={[styles.statusBtn, { backgroundColor: "#7C3AED", flex: 1 }]}
+                          onPress={() => {
+                            setModalVisible(false);
+                            navigation?.navigate("SortingTab", { orderCode: selectedOrder.order_code });
+                          }}
+                        >
+                          <Text style={styles.statusBtnText}>🔍 Verify & Assemble Order</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.statusBtn, { backgroundColor: "#334155", flex: 1 }]}
+                          onPress={() => handleOpenDeliveryModal(selectedOrder)}
+                        >
+                          <Text style={styles.statusBtnText}>🚚 Deliver & Collect Cash</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                );
+              })()}
             </View>
 
             {/* Photo viewer overlay inside detail modal */}
@@ -446,17 +757,88 @@ export default function OrdersScreen() {
 
       {/* Global Photo Viewer Overlay */}
       <PhotoViewerModal
-        visible={viewerVisible}
-        photos={viewerPhotos}
-        initialIndex={viewerIndex}
-        onClose={() => setViewerVisible(false)}
-      />
-    </SafeAreaView>
-  );
-}
+          visible={viewerVisible}
+          photos={viewerPhotos}
+          initialIndex={viewerIndex}
+          onClose={() => setViewerVisible(false)}
+        />
+
+        {/* Deliver & Collect Cash Modal */}
+        {deliveryTargetOrder && (
+          <Modal
+            visible={deliverModalVisible}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setDeliverModalVisible(false)}
+          >
+            <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 20 }}>
+              <View style={{ width: "100%", maxWidth: 360, backgroundColor: "#FFF", borderRadius: radius.md, padding: 20, ...shadow.md }}>
+                <Text style={{ fontSize: 18, fontWeight: "800", color: colors.text, marginBottom: 4 }}>🚚 Order Delivery & Cash Collection</Text>
+                <Text style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>
+                  Order Code: {deliveryTargetOrder.order_code} • Customer: {deliveryTargetOrder.customers?.name || deliveryTargetOrder.customers?.phone_number}
+                </Text>
+
+                <View style={{ backgroundColor: "#F8FAFC", borderRadius: radius.sm, padding: 12, borderWidth: 1, borderColor: colors.border, marginBottom: 16 }}>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
+                    <Text style={{ fontSize: 12, color: colors.textMuted }}>Total Hanger Tags:</Text>
+                    <Text style={{ fontSize: 12, fontWeight: "800", color: colors.text }}>{deliveryTargetOrder.tags_count || 1} Tags</Text>
+                  </View>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
+                    <Text style={{ fontSize: 12, color: colors.textMuted }}>Total Bill Amount:</Text>
+                    <Text style={{ fontSize: 16, fontWeight: "900", color: colors.primary }}>Rs {deliveryTargetOrder.total_bill_amount || 0}</Text>
+                  </View>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                    <Text style={{ fontSize: 12, color: colors.textMuted }}>Current Payment Status:</Text>
+                    <Text style={{ fontSize: 12, fontWeight: "800", color: deliveryTargetOrder.payment_status === "paid" ? "#16A34A" : "#B45309" }}>
+                      {deliveryTargetOrder.payment_status === "paid" ? "💳 ALREADY PAID" : "⌛ UNPAID"}
+                    </Text>
+                  </View>
+                </View>
+
+                {delivering ? (
+                  <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: 20 }} />
+                ) : (
+                  <View style={{ gap: 10 }}>
+                    <TouchableOpacity
+                      style={{ backgroundColor: "#16A34A", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
+                      onPress={() => handleExecuteDelivery("paid")}
+                    >
+                      <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
+                        💵 Collect Rs {deliveryTargetOrder.total_bill_amount || 0} Cash & Deliver
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={{ backgroundColor: "#D97706", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
+                      onPress={() => handleExecuteDelivery("unpaid")}
+                    >
+                      <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
+                        ⌛ Deliver on Customer Account (Mark Unpaid)
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={{ paddingVertical: 8, alignItems: "center", marginTop: 4 }}
+                      onPress={() => setDeliverModalVisible(false)}
+                    >
+                      <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: "700" }}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            </View>
+          </Modal>
+        )}
+      </SafeAreaView>
+    );
+  }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.surface },
+  safe: {
+    flex: 1,
+    backgroundColor: colors.screenBg,
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 24) + 6 : 0,
+  },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   header: {
     paddingHorizontal: spacing.lg,
@@ -747,5 +1129,30 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "700",
     fontSize: 13,
+  },
+  speedBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: radius.xs,
+    borderWidth: 1,
+  },
+  badgeUrgent: {
+    backgroundColor: "#FEE2E2",
+    borderColor: "#EF4444",
+  },
+  badgeExpress: {
+    backgroundColor: "#FEF3C7",
+    borderColor: "#F59E0B",
+  },
+  speedBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: colors.text,
+  },
+  delDateText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: colors.primary,
+    marginTop: 2,
   },
 });

@@ -17,9 +17,26 @@ export function formatPhoneForWhatsApp(phoneNumber) {
   return digits;
 }
 
+export function getServiceTypeLabel(serviceKey) {
+  switch (serviceKey) {
+    case "press_only": return "👔 Press Only";
+    case "dry_clean": return "🧪 Dry Clean";
+    case "wash_fold": return "🧼 Wash & Fold";
+    case "wash_press": default: return "🧺 Wash & Press";
+  }
+}
+
+export function getOrderTypeLabel(typeKey) {
+  switch (typeKey) {
+    case "urgent": return "🔥 URGENT (Instant / 2-4 Hours)";
+    case "express": return "⚡ EXPRESS (Same Day)";
+    case "normal": default: return "📦 NORMAL (Standard)";
+  }
+}
+
 /**
  * Builds the formatted receipt text for customer WhatsApp sharing.
- * Includes customer info, garment breakdown, totals, and direct links to BOTH photos.
+ * Includes customer info, order type, delivery schedule, garment breakdown (with service type), and photos.
  */
 export function buildReceiptMessage({ order = {}, items = [], photoUrls = [] }) {
   const customerName =
@@ -34,6 +51,10 @@ export function buildReceiptMessage({ order = {}, items = [], photoUrls = [] }) 
     hour: "2-digit",
     minute: "2-digit",
   });
+
+  const orderTypeStr = getOrderTypeLabel(order.order_type || "normal");
+  const delDateStr = order.delivery_date || "As per schedule";
+  const delTimeStr = order.delivery_time_slot || "Anytime";
 
   const totalItems =
     order.total_item_count ||
@@ -54,9 +75,10 @@ export function buildReceiptMessage({ order = {}, items = [], photoUrls = [] }) 
     activeItems.length > 0
       ? activeItems.map((i) => {
           const name = i.name || i.item_types?.name || "Garment";
+          const serviceTag = getServiceTypeLabel(i.service_type);
           const qty = Number(i.quantity) || 0;
           const price = Number(i.unit_price) || 0;
-          return `• ${name} x${qty} — Rs ${qty * price}`;
+          return `• ${name} [${serviceTag}] x${qty} — Rs ${qty * price}`;
         })
       : ["• Laundry Service (General)"];
 
@@ -78,17 +100,20 @@ export function buildReceiptMessage({ order = {}, items = [], photoUrls = [] }) 
     `--------------------------------`,
     `👤 Customer: *${customerName}*`,
     `🧾 Order Code: *${orderCode}*`,
-    `📅 Date: ${dateStr} at ${timeStr}`,
-    ``,
-    `📋 *Garment Breakdown:*`,
+    `🏷️ Physical Hanger Tags: *${order.tags_count || 1} Tags*`,
+    `⚡ SLA Priority: *${orderTypeStr}*`,
+    `📅 Promised Delivery: *${delDateStr} (${delTimeStr})*`,
+    `💳 Payment Settlement: *${order.payment_status === "paid" ? "PAID CASH" : "UNPAID (On Return)"}*`,
+    `--------------------------------`,
+    `📋 *Garment & Service Breakdown:*`,
     ...itemList,
     `--------------------------------`,
     `🧺 Total Items: *${totalItems} pcs*`,
     `💰 Total Bill: *Rs ${totalBill}*`,
     `--------------------------------`,
     ...photoSection,
-    `✨ *Status:* Washing & Processing`,
-    `We will notify you once your laundry is washed, packed, and ready for pickup!`,
+    `✨ *Status:* Processing`,
+    `We will notify you once your garments are ready for pickup/delivery!`,
     ``,
     `Thank you for choosing CleanWave Laundry! 🌟`,
   ];
@@ -168,6 +193,10 @@ export async function sharePdfInvoiceWithPhotos({
       minute: "2-digit",
     });
 
+    const orderTypeStr = getOrderTypeLabel(order.order_type || "normal");
+    const delDateStr = order.delivery_date || "As per schedule";
+    const delTimeStr = order.delivery_time_slot || "Anytime";
+
     const activeItems = (items || []).filter(
       (i) => (Number(i.quantity) || 0) > 0
     );
@@ -207,14 +236,18 @@ export async function sharePdfInvoiceWithPhotos({
     )
       .map((it) => {
         const name = it.name || it.item_types?.name || "Garment";
+        const serviceTag = getServiceTypeLabel(it.service_type);
         const qty = Number(it.quantity) || 0;
         const price = Number(it.unit_price) || 0;
         return `
         <tr>
-          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; font-weight: 600;">${name}</td>
-          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: center;">${qty}</td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0;">
+            <div style="font-weight: 700; color: #0f172a;">${name}</div>
+            <div style="font-size: 11px; font-weight: 700; color: #0284c7; margin-top: 2px;">${serviceTag}</div>
+          </td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: center; font-weight: 600;">${qty}</td>
           <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; color: #64748b;">Rs ${price}</td>
-          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: 700;">Rs ${qty * price}</td>
+          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: 700; color: #0f172a;">Rs ${qty * price}</td>
         </tr>
       `;
       })
@@ -403,9 +436,20 @@ export async function sharePdfInvoiceWithPhotos({
                 <div class="meta-sub">${customerPhone || "—"}</div>
               </div>
               <div style="text-align: right;">
-                <div class="meta-label">Date & Time</div>
+                <div class="meta-label">Order Created</div>
                 <div class="meta-val">${dateStr}</div>
                 <div class="meta-sub">${timeStr}</div>
+              </div>
+            </div>
+
+            <div style="background-color: #f1f5f9; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #e2e8f0;">
+              <div>
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">📅 Promised Delivery Schedule</div>
+                <div style="font-size: 13px; font-weight: 800; color: #0284c7; margin-top: 2px;">${delDateStr} (${delTimeStr})</div>
+              </div>
+              <div style="text-align: right;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">Priority & Tags</div>
+                <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-top: 2px;">${orderTypeStr} • 🏷️ ${order.tags_count || 1} Tags</div>
               </div>
             </div>
 
@@ -457,6 +501,58 @@ export async function sharePdfInvoiceWithPhotos({
     return true;
   } catch (err) {
     Alert.alert("PDF Share Error", err.message);
+    return false;
+  }
+}
+
+/**
+ * Format and send Customer Account Ledger Statement via WhatsApp
+ */
+export async function sendCustomerLedgerWhatsApp({ customerName, phoneNumber, ledgerData }) {
+  if (!phoneNumber) {
+    Alert.alert("Error", "No phone number available for WhatsApp sharing.");
+    return false;
+  }
+
+  const name = customerName || "Valued Customer";
+  const totalOrders = ledgerData?.totalOrders || 0;
+  const totalBill = ledgerData?.totalBill || 0;
+  const totalPaid = ledgerData?.totalPaid || 0;
+  const pending = ledgerData?.pendingBalance || 0;
+
+  let msg = `🧺 *LAUNDRY ACCOUNT STATEMENT*\n`;
+  msg += `👤 Customer: *${name}*\n`;
+  msg += `📞 Phone: ${phoneNumber}\n`;
+  msg += `📅 Date: ${new Date().toLocaleDateString()}\n`;
+  msg += `--------------------------------\n`;
+  msg += `📦 Total Orders: ${totalOrders}\n`;
+  msg += `💰 Total Bill Amount: Rs ${totalBill}\n`;
+  msg += `💵 Total Payments Received: Rs ${totalPaid}\n`;
+  msg += `--------------------------------\n`;
+  if (pending > 0) {
+    msg += `🔴 *PENDING ACCOUNT BALANCE: Rs ${pending}*\n\n`;
+    msg += `Kindly clear your pending balance at your earliest convenience. Thank you for your business! 🙏`;
+  } else {
+    msg += `🟢 *ALL DUES CLEARED (Rs 0 BALANCE)*\n\n`;
+    msg += `Thank you for being a valued customer! 🙏`;
+  }
+
+  const formattedPhone = formatPhoneForWhatsApp(phoneNumber);
+  const encodedText = encodeURIComponent(msg);
+  const waUrl = `whatsapp://send?phone=${formattedPhone}&text=${encodedText}`;
+
+  try {
+    const canOpen = await Linking.canOpenURL(waUrl);
+    if (canOpen) {
+      await Linking.openURL(waUrl);
+      return true;
+    } else {
+      const webUrl = `https://api.whatsapp.com/send?phone=${formattedPhone}&text=${encodedText}`;
+      await Linking.openURL(webUrl);
+      return true;
+    }
+  } catch (err) {
+    Alert.alert("WhatsApp Error", "Could not open WhatsApp on this device.");
     return false;
   }
 }
