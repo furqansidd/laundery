@@ -28,8 +28,8 @@
       "package": "com.laundry.tracker"
     },
     "extra": {
-      "supabaseUrl": "https://zrzgyxytoczigpnmxfgb.supabase.co",
-      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpyemd5eHl0b2N6aWdwbm14ZmdiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc5NzgzMTEsImV4cCI6MjEwMzU1NDMxMX0.OmW5S4nnRhvStgOTr62JLNw9kntT2WwmzkcDXoT2NCA",
+      "supabaseUrl": "https://tdytxjfwugidmdcuytik.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRkeXR4amZ3dWdpZG1kY3V5dGlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNjAxNzEsImV4cCI6MjEwMzgzNjE3MX0.4W2_peRpuMFKLIb0h8JkIHFrIkylCv3KN5y3ZJjMuP8",
       "eas": {
         "projectId": "e13946e5-94c8-4aa3-92de-1aac8bcde1e7"
       }
