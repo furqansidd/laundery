@@ -37,16 +37,13 @@
 | Task 36: Bundle vs Individual Hanger Tag Printer Logic in src/utils/print.js | Done |
 | Task 37: Per-Service Stage Movement API & State Helper in src/lib/ordersApi.js | Done |
 | Task 38: Per-Service Stage Buttons & Auto-Disappear UI in src/screens/OrdersScreen.js | Done |
-| Task 39: Final Verification & Node Syntax Check | Done |
-
-
-
-
-
-
-
-
-
-
-
-
+| Task 40: Priority & Timing Config API in ordersApi.js | Done |
+| Task 41: Priorities & Timing Tab in SettingsScreen.js | Done |
+| Task 42: Modern Client Invoice Slip & Auto WhatsApp in whatsapp.js | Done |
+| Task 43: IntakeScreen Integration (Dynamic Priorities, Auto Timing, Invoice Actions) | Done |
+| Task 44: OrdersScreen & SortingScreen Integration (Auto WhatsApp on Ready & Invoice Actions) | Done |
+| Task 46: Orders Persistence in AsyncStorage & Immediate Local State in ordersApi.js | Done |
+| Task 47: Instant Optimistic UI Stage Movement & Paid Delivery Button in OrdersScreen.js | Done |
+| Task 48: Paid Delivery Button & Modal Logic in SortingScreen.js | Done |
+| Task 49: Verification & Syntax Validation | Done |
+| Task 50: Rename all occurrences of Khata to Ledger across UI and codebase | Done |
