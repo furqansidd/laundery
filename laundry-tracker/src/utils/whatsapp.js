@@ -160,14 +160,375 @@ export async function sendWhatsAppReceipt({ phoneNumber, message }) {
 }
 
 /**
- * Generates an HTML invoice with Barcode and Both Intake Photos embedded,
- * then converts to PDF and opens the system Share sheet to send to WhatsApp.
+ * Generates modern, compact 80mm printable and shareable receipt slip HTML
  */
-export async function sharePdfInvoiceWithPhotos({
-  order = {},
-  items = [],
-  photoUrls = [],
-}) {
+export function generateInvoiceSlipHtml({ order = {}, items = [], photoUrls = [] }) {
+  const customerName =
+    order.customer_name || order.customers?.name || "Valued Customer";
+  const customerPhone =
+    order.customer_phone || order.customers?.phone_number || "";
+  const orderCode = order.order_code || "LN-ORDER";
+  const dateStr = new Date().toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const timeStr = new Date().toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const orderTypeStr = getOrderTypeLabel(order.order_type || "normal");
+  const delDateStr = order.delivery_date || "As per schedule";
+  const delTimeStr = order.delivery_time_slot || "Anytime";
+
+  const activeItems = (items || []).filter(
+    (i) => (Number(i.quantity) || 0) > 0
+  );
+  const totalItems =
+    order.total_item_count ||
+    items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0);
+  const totalBill =
+    order.total_bill_amount ??
+    order.total_bill ??
+    items.reduce(
+      (sum, i) =>
+        sum + (Number(i.quantity) || 0) * (Number(i.unit_price) || 0),
+      0
+    );
+
+  const isPaid = order.payment_status === "paid";
+
+  // Encode Code128 Barcode for invoice
+  const { widths, bars } = encodeCode128B(orderCode);
+  const moduleWidth = 2;
+  const totalBarcodeWidth = widths.reduce((a, b) => a + b, 0) * moduleWidth;
+
+  let x = 0;
+  let barcodeRects = "";
+  for (let i = 0; i < widths.length; i++) {
+    const w = widths[i] * moduleWidth;
+    if (bars[i]) {
+      barcodeRects += `<rect x="${x}" y="0" width="${w}" height="48" fill="#0f172a" />`;
+    }
+    x += w;
+  }
+
+  // Build Table Rows
+  const tableRows = (
+    activeItems.length > 0
+      ? activeItems
+      : [{ name: "Laundry Service", quantity: totalItems || 1, unit_price: totalBill }]
+  )
+    .map((it) => {
+      const name = it.name || it.item_types?.name || "Garment";
+      const serviceTag = getServiceTypeLabel(it.service_type);
+      const qty = Number(it.quantity) || 0;
+      const price = Number(it.unit_price) || 0;
+      return `
+      <tr>
+        <td style="padding: 7px 4px; border-bottom: 1px dashed #e2e8f0;">
+          <div style="font-weight: 700; color: #0f172a; font-size: 13px;">${name}</div>
+          <div style="font-size: 10px; font-weight: 700; color: #0284c7; margin-top: 1px;">${serviceTag}</div>
+        </td>
+        <td style="padding: 7px 4px; border-bottom: 1px dashed #e2e8f0; text-align: center; font-weight: 700; font-size: 13px;">${qty}</td>
+        <td style="padding: 7px 4px; border-bottom: 1px dashed #e2e8f0; text-align: right; color: #64748b; font-size: 12px;">Rs ${price}</td>
+        <td style="padding: 7px 4px; border-bottom: 1px dashed #e2e8f0; text-align: right; font-weight: 800; color: #0f172a; font-size: 13px;">Rs ${qty * price}</td>
+      </tr>
+    `;
+    })
+    .join("");
+
+  // Build Photos HTML Gallery
+  const validPhotoUrls = (photoUrls || []).filter(
+    (url) => typeof url === "string" && url.trim().length > 0
+  );
+
+  const photosHtml =
+    validPhotoUrls.length > 0
+      ? `
+      <div style="margin-top: 14px; padding-top: 12px; border-top: 1px dashed #cbd5e1;">
+        <div style="font-size: 11px; font-weight: 800; color: #0284c7; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">
+          📸 Intake Photos (${validPhotoUrls.length})
+        </div>
+        <div style="display: flex; gap: 8px; justify-content: space-between;">
+          ${validPhotoUrls
+            .map(
+              (url, idx) => `
+            <div style="flex: 1; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; background-color: #f8fafc; text-align: center;">
+              <img src="${url}" style="width: 100%; height: 110px; object-fit: cover; display: block;" />
+              <div style="padding: 3px; font-size: 10px; font-weight: 700; color: #475569; background: #f1f5f9;">Photo ${idx + 1}</div>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+      </div>
+    `
+      : "";
+
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          @page {
+            size: 80mm auto;
+            margin: 3mm;
+          }
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            box-sizing: border-box;
+          }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            color: #1e293b;
+            margin: 0;
+            padding: 8px;
+            background-color: #f8fafc;
+          }
+          .invoice-box {
+            max-width: 380px;
+            margin: 0 auto;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+          }
+          .brand-header {
+            text-align: center;
+            border-bottom: 2px solid #0284c7;
+            padding-bottom: 10px;
+            margin-bottom: 12px;
+          }
+          .brand-name {
+            font-size: 20px;
+            font-weight: 900;
+            color: #0284c7;
+            letter-spacing: -0.3px;
+          }
+          .brand-tag {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 2px;
+          }
+          .meta-grid {
+            background-color: #f8fafc;
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 12px;
+            border: 1px solid #e2e8f0;
+          }
+          .meta-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+          }
+          .meta-row:last-child {
+            margin-bottom: 0;
+          }
+          .meta-label {
+            font-size: 11px;
+            color: #64748b;
+            font-weight: 600;
+          }
+          .meta-val {
+            font-size: 12px;
+            font-weight: 700;
+            color: #0f172a;
+          }
+          .badge-box {
+            background-color: #e0f2fe;
+            border: 1px solid #7dd3fc;
+            border-radius: 6px;
+            padding: 8px 10px;
+            margin-bottom: 12px;
+          }
+          .schedule-text {
+            font-size: 12px;
+            font-weight: 800;
+            color: #0369a1;
+          }
+          .priority-text {
+            font-size: 11px;
+            font-weight: 700;
+            color: #0284c7;
+            margin-top: 2px;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 12px;
+          }
+          th {
+            background-color: #f1f5f9;
+            padding: 6px 4px;
+            font-size: 10px;
+            font-weight: 800;
+            color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          .totals-box {
+            background-color: ${isPaid ? "#f0fdf4" : "#fef3c7"};
+            border: 1px solid ${isPaid ? "#bbf7d0" : "#fde68a"};
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-top: 10px;
+          }
+          .totals-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          .total-amount {
+            font-size: 18px;
+            font-weight: 900;
+            color: ${isPaid ? "#15803d" : "#b45309"};
+          }
+          .payment-pill {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: 800;
+            background-color: ${isPaid ? "#16a34a" : "#d97706"};
+            color: #ffffff;
+            margin-top: 4px;
+          }
+          .barcode-section {
+            text-align: center;
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px dashed #cbd5e1;
+          }
+          .barcode-svg {
+            display: block;
+            width: 220px;
+            height: 40px;
+            margin: 0 auto;
+          }
+          .barcode-code {
+            font-size: 13px;
+            font-weight: 800;
+            letter-spacing: 2px;
+            color: #0f172a;
+            margin-top: 3px;
+          }
+          .footer-note {
+            text-align: center;
+            font-size: 10px;
+            color: #94a3b8;
+            margin-top: 12px;
+            line-height: 1.4;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="invoice-box">
+          <div class="brand-header">
+            <div class="brand-name">🧺 CleanWave Laundry</div>
+            <div class="brand-tag">Premium Care & Garment Tracking Slip</div>
+          </div>
+
+          <div class="meta-grid">
+            <div class="meta-row">
+              <span class="meta-label">Customer:</span>
+              <span class="meta-val">${customerName}</span>
+            </div>
+            ${
+              customerPhone
+                ? `<div class="meta-row">
+                    <span class="meta-label">Phone:</span>
+                    <span class="meta-val">${customerPhone}</span>
+                  </div>`
+                : ""
+            }
+            <div class="meta-row">
+              <span class="meta-label">Order Code:</span>
+              <span class="meta-val">${orderCode}</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">Date & Time:</span>
+              <span class="meta-val">${dateStr} • ${timeStr}</span>
+            </div>
+          </div>
+
+          <div class="badge-box">
+            <div class="schedule-text">📅 Promised: ${delDateStr} (${delTimeStr})</div>
+            <div class="priority-text">⚡ Priority: ${orderTypeStr}</div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="text-align: left;">Item</th>
+                <th style="text-align: center;">Qty</th>
+                <th style="text-align: right;">Rate</th>
+                <th style="text-align: right;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+
+          <div class="totals-box">
+            <div class="totals-header">
+              <div style="font-size: 12px; font-weight: 700; color: #334155;">
+                Total Items: <strong>${totalItems} pcs</strong>
+              </div>
+              <div class="total-amount">Rs ${totalBill}</div>
+            </div>
+            <div style="display: flex; justify-content: flex-end;">
+              <span class="payment-pill">
+                ${isPaid ? "✓ PAID IN FULL" : "⌛ UNPAID (Due on Pickup)"}
+              </span>
+            </div>
+          </div>
+
+          ${photosHtml}
+
+          <div class="barcode-section">
+            <svg class="barcode-svg" viewBox="0 0 ${totalBarcodeWidth} 48" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="${totalBarcodeWidth}" height="48" fill="#ffffff"/>
+              ${barcodeRects}
+            </svg>
+            <div class="barcode-code">${orderCode}</div>
+          </div>
+
+          <div class="footer-note">
+            Thank you for trusting CleanWave Laundry! 🙏<br/>
+            We will notify you via WhatsApp once packed & ready.
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+}
+
+/**
+ * Directly prints the modern invoice slip using the system print sheet (AirPrint, POS thermal, WiFi, PDF).
+ */
+export async function printInvoiceSlip({ order = {}, items = [], photoUrls = [] }) {
+  try {
+    const html = generateInvoiceSlipHtml({ order, items, photoUrls });
+    await Print.printAsync({ html });
+    return true;
+  } catch (err) {
+    Alert.alert("Print Error", err.message || "Failed to initiate printer.");
+    return false;
+  }
+}
+
+/**
+ * Generates modern PDF slip and opens the system Share sheet to send to WhatsApp or save.
+ */
+export async function shareInvoiceSlipPdf({ order = {}, items = [], photoUrls = [] }) {
   try {
     const isSharingAvailable = await Sharing.isAvailableAsync();
     if (!isSharingAvailable) {
@@ -178,321 +539,10 @@ export async function sharePdfInvoiceWithPhotos({
       return false;
     }
 
-    const customerName =
-      order.customer_name || order.customers?.name || "Customer";
-    const customerPhone =
-      order.customer_phone || order.customers?.phone_number || "";
-    const orderCode = order.order_code || "LN-ORDER";
-    const dateStr = new Date().toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-    const timeStr = new Date().toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-
-    const orderTypeStr = getOrderTypeLabel(order.order_type || "normal");
-    const delDateStr = order.delivery_date || "As per schedule";
-    const delTimeStr = order.delivery_time_slot || "Anytime";
-
-    const activeItems = (items || []).filter(
-      (i) => (Number(i.quantity) || 0) > 0
-    );
-    const totalItems =
-      order.total_item_count ||
-      items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0);
-    const totalBill =
-      order.total_bill_amount ??
-      order.total_bill ??
-      items.reduce(
-        (sum, i) =>
-          sum + (Number(i.quantity) || 0) * (Number(i.unit_price) || 0),
-        0
-      );
-
-    // Encode Code128 Barcode for invoice
-    const { widths, bars } = encodeCode128B(orderCode);
-    const moduleWidth = 2;
-    const totalBarcodeWidth =
-      widths.reduce((a, b) => a + b, 0) * moduleWidth;
-
-    let x = 0;
-    let barcodeRects = "";
-    for (let i = 0; i < widths.length; i++) {
-      const w = widths[i] * moduleWidth;
-      if (bars[i]) {
-        barcodeRects += `<rect x="${x}" y="0" width="${w}" height="50" fill="#000000" />`;
-      }
-      x += w;
-    }
-
-    // Build Table Rows
-    const tableRows = (
-      activeItems.length > 0
-        ? activeItems
-        : [{ name: "General Laundry", quantity: totalItems || 1, unit_price: totalBill }]
-    )
-      .map((it) => {
-        const name = it.name || it.item_types?.name || "Garment";
-        const serviceTag = getServiceTypeLabel(it.service_type);
-        const qty = Number(it.quantity) || 0;
-        const price = Number(it.unit_price) || 0;
-        return `
-        <tr>
-          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0;">
-            <div style="font-weight: 700; color: #0f172a;">${name}</div>
-            <div style="font-size: 11px; font-weight: 700; color: #0284c7; margin-top: 2px;">${serviceTag}</div>
-          </td>
-          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: center; font-weight: 600;">${qty}</td>
-          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; color: #64748b;">Rs ${price}</td>
-          <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: 700; color: #0f172a;">Rs ${qty * price}</td>
-        </tr>
-      `;
-      })
-      .join("");
-
-    // Build Photos HTML Gallery
-    const validPhotoUrls = (photoUrls || []).filter(
-      (url) => typeof url === "string" && url.trim().length > 0
-    );
-
-    const photosHtml =
-      validPhotoUrls.length > 0
-        ? `
-        <div style="margin-top: 24px;">
-          <div style="font-size: 13px; font-weight: 800; color: #0284c7; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px;">
-            📸 Intake Proof Photos (${validPhotoUrls.length})
-          </div>
-          <div style="display: flex; gap: 12px; justify-content: space-between;">
-            ${validPhotoUrls
-              .map(
-                (url, idx) => `
-              <div style="flex: 1; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; background-color: #f8fafc; text-align: center;">
-                <img src="${url}" style="width: 100%; height: 160px; object-fit: cover; display: block;" />
-                <div style="padding: 4px; font-size: 11px; font-weight: 700; color: #475569; background: #f1f5f9;">Photo ${idx + 1}</div>
-              </div>
-            `
-              )
-              .join("")}
-          </div>
-        </div>
-      `
-        : "";
-
-    const html = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <style>
-            @page {
-              size: A4 portrait;
-              margin: 15mm;
-            }
-            * {
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-              box-sizing: border-box;
-            }
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-              color: #1e293b;
-              margin: 0;
-              padding: 10px;
-              background-color: #ffffff;
-            }
-            .invoice-box {
-              max-width: 600px;
-              margin: 0 auto;
-              border: 1px solid #e2e8f0;
-              border-radius: 12px;
-              padding: 24px;
-              box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-            }
-            .header-row {
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              border-bottom: 2px solid #0284c7;
-              padding-bottom: 12px;
-              margin-bottom: 16px;
-            }
-            .brand-name {
-              font-size: 22px;
-              font-weight: 800;
-              color: #0284c7;
-            }
-            .brand-tag {
-              font-size: 12px;
-              color: #64748b;
-              margin-top: 2px;
-            }
-            .invoice-title {
-              font-size: 20px;
-              font-weight: 800;
-              color: #0f172a;
-              text-align: right;
-            }
-            .meta-grid {
-              display: flex;
-              justify-content: space-between;
-              background-color: #f8fafc;
-              border-radius: 8px;
-              padding: 12px 16px;
-              margin-bottom: 20px;
-            }
-            .meta-label {
-              font-size: 10px;
-              font-weight: 700;
-              color: #94a3b8;
-              text-transform: uppercase;
-              letter-spacing: 0.5px;
-            }
-            .meta-val {
-              font-size: 14px;
-              font-weight: 700;
-              color: #0f172a;
-              margin-top: 2px;
-            }
-            .meta-sub {
-              font-size: 12px;
-              color: #64748b;
-            }
-            table {
-              width: 100%;
-              border-collapse: collapse;
-              margin-bottom: 16px;
-            }
-            th {
-              background-color: #f1f5f9;
-              padding: 8px 10px;
-              font-size: 11px;
-              font-weight: 700;
-              color: #475569;
-              text-transform: uppercase;
-              letter-spacing: 0.5px;
-            }
-            .totals-row {
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              padding: 12px 16px;
-              background-color: #f0fdf4;
-              border: 1px solid #bbf7d0;
-              border-radius: 8px;
-              margin-top: 12px;
-            }
-            .total-bill {
-              font-size: 18px;
-              font-weight: 800;
-              color: #15803d;
-            }
-            .barcode-section {
-              text-align: center;
-              margin-top: 20px;
-              padding-top: 16px;
-              border-top: 1px dashed #cbd5e1;
-            }
-            .barcode-svg {
-              display: block;
-              width: 220px;
-              height: 45px;
-              margin: 0 auto;
-            }
-            .barcode-text {
-              font-size: 13px;
-              font-weight: 800;
-              letter-spacing: 2px;
-              color: #334155;
-              margin-top: 4px;
-            }
-            .footer-note {
-              text-align: center;
-              font-size: 11px;
-              color: #94a3b8;
-              margin-top: 18px;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="invoice-box">
-            <div class="header-row">
-              <div>
-                <div class="brand-name">🧺 CleanWave Laundry</div>
-                <div class="brand-tag">Premium Care & Garment Tracking</div>
-              </div>
-              <div>
-                <div class="invoice-title">RECEIPT</div>
-                <div style="font-size: 11px; color: #64748b;">${orderCode}</div>
-              </div>
-            </div>
-
-            <div class="meta-grid">
-              <div>
-                <div class="meta-label">Customer</div>
-                <div class="meta-val">${customerName}</div>
-                <div class="meta-sub">${customerPhone || "—"}</div>
-              </div>
-              <div style="text-align: right;">
-                <div class="meta-label">Order Created</div>
-                <div class="meta-val">${dateStr}</div>
-                <div class="meta-sub">${timeStr}</div>
-              </div>
-            </div>
-
-            <div style="background-color: #f1f5f9; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #e2e8f0;">
-              <div>
-                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">📅 Promised Delivery Schedule</div>
-                <div style="font-size: 13px; font-weight: 800; color: #0284c7; margin-top: 2px;">${delDateStr} (${delTimeStr})</div>
-              </div>
-              <div style="text-align: right;">
-                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">Priority & Tags</div>
-                <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-top: 2px;">${orderTypeStr} • 🏷️ ${order.tags_count || 1} Tags</div>
-              </div>
-            </div>
-
-            <table>
-              <thead>
-                <tr>
-                  <th style="text-align: left; border-top-left-radius: 6px;">Item</th>
-                  <th style="text-align: center;">Qty</th>
-                  <th style="text-align: right;">Rate</th>
-                  <th style="text-align: right; border-top-right-radius: 6px;">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${tableRows}
-              </tbody>
-            </table>
-
-            <div class="totals-row">
-              <div style="font-weight: 700; color: #334155; font-size: 14px;">
-                Total Items: <strong>${totalItems} pcs</strong>
-              </div>
-              <div class="total-bill">Total: Rs ${totalBill}</div>
-            </div>
-
-            ${photosHtml}
-
-            <div class="barcode-section">
-              <svg class="barcode-svg" viewBox="0 0 ${totalBarcodeWidth} 50" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="${totalBarcodeWidth}" height="50" fill="#ffffff"/>
-                ${barcodeRects}
-              </svg>
-              <div class="barcode-text">${orderCode}</div>
-            </div>
-
-            <div class="footer-note">
-              Thank you for trusting CleanWave Laundry! • We will notify you once packed & ready.
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
-
+    const html = generateInvoiceSlipHtml({ order, items, photoUrls });
     const file = await Print.printToFileAsync({ html });
+    const orderCode = order.order_code || "LN-ORDER";
+
     await Sharing.shareAsync(file.uri, {
       mimeType: "application/pdf",
       dialogTitle: `Share Invoice for ${orderCode}`,
@@ -503,6 +553,50 @@ export async function sharePdfInvoiceWithPhotos({
     Alert.alert("PDF Share Error", err.message);
     return false;
   }
+}
+
+/** Legacy alias for backwards compatibility */
+export const sharePdfInvoiceWithPhotos = shareInvoiceSlipPdf;
+
+/**
+ * Sends customer an automatic WhatsApp message notifying them that their order is completed and ready.
+ */
+export async function sendOrderReadyWhatsApp(order = {}) {
+  const phone = order.customer_phone || order.customers?.phone_number || "";
+  const name = order.customer_name || order.customers?.name || "Valued Customer";
+  const code = order.order_code || "LN-ORDER";
+  const totalItems =
+    order.total_item_count ||
+    (order.order_items || []).reduce((s, i) => s + (Number(i.quantity) || 0), 0) ||
+    1;
+  const totalBill =
+    order.total_bill_amount ??
+    order.total_bill ??
+    (order.order_items || []).reduce(
+      (s, i) => s + (Number(i.quantity) || 0) * (Number(i.unit_price) || 0),
+      0
+    );
+  const isPaid = order.payment_status === "paid";
+  const payText = isPaid
+    ? "✅ PAID CASH"
+    : `⌛ UNPAID (Rs ${totalBill} due on collection)`;
+
+  const message = [
+    `🧺 *CleanWave Laundry — Order Ready!*`,
+    `--------------------------------`,
+    `Hello *${name}*! ✨`,
+    ``,
+    `Great news! Your laundry order is washed, packed, and *READY FOR PICKUP*! 📦`,
+    ``,
+    `🧾 Order Code: *${code}*`,
+    `🧺 Total Garments: *${totalItems} pcs*`,
+    `💰 Total Bill: *Rs ${totalBill}* (${payText})`,
+    `📍 Pickup Location: *Main Laundry Counter*`,
+    `--------------------------------`,
+    `You can collect your fresh garments at your earliest convenience. Thank you for choosing CleanWave Laundry! 🙏`,
+  ].join("\n");
+
+  return await sendWhatsAppReceipt({ phoneNumber: phone, message });
 }
 
 /**

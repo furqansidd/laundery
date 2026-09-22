@@ -25,6 +25,9 @@ import {
   buildReceiptMessage,
   sendWhatsAppReceipt,
   sharePdfInvoiceWithPhotos,
+  shareInvoiceSlipPdf,
+  printInvoiceSlip,
+  sendOrderReadyWhatsApp,
 } from "../utils/whatsapp";
 
 const STATUS_FILTERS = [
@@ -151,7 +154,7 @@ export default function OrdersScreen({ navigation }) {
         "Order Delivered! 🚚",
         payStatus === "paid"
           ? `Collected Rs ${bill} cash & marked order PAID!`
-          : `Order delivered and added to customer's Udhaar Khata.`
+          : `Order delivered and added to customer's Ledger Account.`
       );
       loadOrders();
     } catch (e) {
@@ -204,13 +207,54 @@ export default function OrdersScreen({ navigation }) {
       let statusLabel = customLabel || newStatus;
       const isServiceKey = ["wash_press", "press_only", "dry_clean", "wash_fold"].includes(newStatus);
 
+      // Optimistically update orders in state immediately without waiting
+      setOrders((prevOrders) =>
+        prevOrders.map((ord) => {
+          if (ord.id !== orderId) return ord;
+          const updated = { ...ord };
+          if (isServiceKey) {
+            if (actionType === "complete") {
+              const completed = Array.isArray(ord.completed_services) ? [...ord.completed_services] : [];
+              if (!completed.includes(newStatus)) completed.push(newStatus);
+              updated.completed_services = completed;
+            } else {
+              const moved = Array.isArray(ord.moved_services) ? [...ord.moved_services] : [];
+              if (!moved.includes(newStatus)) moved.push(newStatus);
+              updated.moved_services = moved;
+            }
+          } else {
+            updated.status = newStatus;
+          }
+          return updated;
+        })
+      );
+
+      if (selectedOrder && selectedOrder.id === orderId) {
+        setSelectedOrder((prev) => {
+          if (!prev) return prev;
+          const updated = { ...prev };
+          if (isServiceKey) {
+            if (actionType === "complete") {
+              const completed = Array.isArray(prev.completed_services) ? [...prev.completed_services] : [];
+              if (!completed.includes(newStatus)) completed.push(newStatus);
+              updated.completed_services = completed;
+            } else {
+              const moved = Array.isArray(prev.moved_services) ? [...prev.moved_services] : [];
+              if (!moved.includes(newStatus)) moved.push(newStatus);
+              updated.moved_services = moved;
+            }
+          } else {
+            updated.status = newStatus;
+          }
+          return updated;
+        });
+      }
+
       if (isServiceKey) {
         if (actionType === "complete") {
           await completeServiceStage(orderId, newStatus, "staff");
-          Alert.alert("Stage Ready ✨", `${statusLabel} marked Ready!`);
         } else {
           await moveServiceStage(orderId, newStatus, "staff");
-          Alert.alert("Stage Dispatched 🚀", `Order items moved to ${statusLabel}!`);
         }
       } else {
         if (!customLabel) {
@@ -223,15 +267,34 @@ export default function OrdersScreen({ navigation }) {
           }
         }
         await updateOrderStatus(orderId, newStatus, `Moved to ${statusLabel}`, "staff");
-        Alert.alert("Status Updated ✨", `Order successfully moved to ${statusLabel}!`);
       }
 
-      if (selectedOrder && selectedOrder.id === orderId) {
-        setSelectedOrder((prev) => ({ ...prev, status: newStatus }));
+      const targetOrder = customOrderObj || selectedOrder || orders.find((o) => o.id === orderId);
+      if (newStatus === "ready_for_delivery" || actionType === "complete") {
+        setTimeout(() => {
+          Alert.alert(
+            "Order Ready! 📦",
+            `Order ${targetOrder?.order_code || ""} is marked Ready! Would you like to notify the customer on WhatsApp?`,
+            [
+              { text: "Later", style: "cancel" },
+              {
+                text: "📲 Send WhatsApp",
+                onPress: () => {
+                  if (targetOrder) {
+                    sendOrderReadyWhatsApp(targetOrder);
+                  }
+                },
+              },
+            ]
+          );
+        }, 350);
       }
-      loadOrders();
+
+      // Re-sync fully with persistent storage
+      await loadOrders();
     } catch (e) {
       Alert.alert("Failed to update status", e.message);
+      loadOrders();
     }
   };
 
@@ -255,7 +318,21 @@ export default function OrdersScreen({ navigation }) {
 
   const handleSharePdf = async () => {
     if (!selectedOrder) return;
-    await sharePdfInvoiceWithPhotos({
+    await shareInvoiceSlipPdf({
+      order: selectedOrder,
+      items: (selectedOrder.order_items || []).map((i) => ({
+        name: i.item_types?.name || i.name || "Garment",
+        service_type: i.service_type || "wash_press",
+        quantity: i.quantity,
+        unit_price: i.unit_price,
+      })),
+      photoUrls: selectedOrder.intake_photo_urls || [],
+    });
+  };
+
+  const handlePrintSlip = async () => {
+    if (!selectedOrder) return;
+    await printInvoiceSlip({
       order: selectedOrder,
       items: (selectedOrder.order_items || []).map((i) => ({
         name: i.item_types?.name || i.name || "Garment",
@@ -477,10 +554,12 @@ export default function OrdersScreen({ navigation }) {
                     <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "800" }}>🔍 Verify & Assemble Order</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={{ flex: 1, backgroundColor: "#334155", paddingVertical: 8, borderRadius: radius.xs, alignItems: "center" }}
+                    style={{ flex: 1, backgroundColor: item.payment_status === "paid" ? "#16A34A" : "#334155", paddingVertical: 8, borderRadius: radius.xs, alignItems: "center" }}
                     onPress={() => handleOpenDeliveryModal(item)}
                   >
-                    <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "800" }}>🚚 Deliver & Collect Cash</Text>
+                    <Text style={{ color: "#FFF", fontSize: 11, fontWeight: "800" }}>
+                      {item.payment_status === "paid" ? "🚚 Deliver (Already Paid)" : "🚚 Deliver & Collect Cash"}
+                    </Text>
                   </TouchableOpacity>
                 </>
               )}
@@ -689,20 +768,35 @@ export default function OrdersScreen({ navigation }) {
               )}
 
               {/* Receipt Sharing Actions */}
-              <View style={[styles.statusActionRow, { marginTop: spacing.sm, marginBottom: 2 }]}>
+              <View style={[styles.statusActionRow, { marginTop: spacing.sm, marginBottom: 4, gap: 6 }]}>
+                <TouchableOpacity
+                  style={[styles.statusBtn, { backgroundColor: "#0284C7", flex: 1 }]}
+                  onPress={handlePrintSlip}
+                >
+                  <Text style={styles.statusBtnText}>🖨️ Print Slip</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.statusBtn, { backgroundColor: "#25D366", flex: 1 }]}
-                  onPress={handleSendWhatsApp}
-                >
-                  <Text style={styles.statusBtnText}>💬 WhatsApp Receipt</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.statusBtn, { backgroundColor: colors.primary, flex: 1 }]}
                   onPress={handleSharePdf}
                 >
-                  <Text style={styles.statusBtnText}>📄 PDF Receipt</Text>
+                  <Text style={styles.statusBtnText}>📲 Share WhatsApp</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.statusBtn, { backgroundColor: colors.surfaceHover, borderWidth: 1, borderColor: colors.border, flex: 0.8 }]}
+                  onPress={handleSendWhatsApp}
+                >
+                  <Text style={[styles.statusBtnText, { color: colors.text }]}>💬 Text</Text>
                 </TouchableOpacity>
               </View>
+
+              {selectedOrder.status === "ready_for_delivery" && (
+                <TouchableOpacity
+                  style={[styles.statusBtn, { backgroundColor: "#16A34A", marginBottom: 6 }]}
+                  onPress={() => sendOrderReadyWhatsApp(selectedOrder)}
+                >
+                  <Text style={styles.statusBtnText}>📦 Send Ready Notice via WhatsApp</Text>
+                </TouchableOpacity>
+              )}
 
               {/* Status Advancement Actions */}
               {(() => {
@@ -732,10 +826,12 @@ export default function OrdersScreen({ navigation }) {
                           <Text style={styles.statusBtnText}>🔍 Verify & Assemble Order</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
-                          style={[styles.statusBtn, { backgroundColor: "#334155", flex: 1 }]}
+                          style={[styles.statusBtn, { backgroundColor: selectedOrder?.payment_status === "paid" ? "#16A34A" : "#334155", flex: 1 }]}
                           onPress={() => handleOpenDeliveryModal(selectedOrder)}
                         >
-                          <Text style={styles.statusBtnText}>🚚 Deliver & Collect Cash</Text>
+                          <Text style={styles.statusBtnText}>
+                            {selectedOrder?.payment_status === "paid" ? "🚚 Deliver (Already Paid)" : "🚚 Deliver & Collect Cash"}
+                          </Text>
                         </TouchableOpacity>
                       </>
                     )}
@@ -773,7 +869,9 @@ export default function OrdersScreen({ navigation }) {
           >
             <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 20 }}>
               <View style={{ width: "100%", maxWidth: 360, backgroundColor: "#FFF", borderRadius: radius.md, padding: 20, ...shadow.md }}>
-                <Text style={{ fontSize: 18, fontWeight: "800", color: colors.text, marginBottom: 4 }}>🚚 Order Delivery & Cash Collection</Text>
+                <Text style={{ fontSize: 18, fontWeight: "800", color: colors.text, marginBottom: 4 }}>
+                  {deliveryTargetOrder.payment_status === "paid" ? "🚚 Confirm Order Delivery" : "🚚 Order Delivery & Cash Collection"}
+                </Text>
                 <Text style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>
                   Order Code: {deliveryTargetOrder.order_code} • Customer: {deliveryTargetOrder.customers?.name || deliveryTargetOrder.customers?.phone_number}
                 </Text>
@@ -799,23 +897,36 @@ export default function OrdersScreen({ navigation }) {
                   <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: 20 }} />
                 ) : (
                   <View style={{ gap: 10 }}>
-                    <TouchableOpacity
-                      style={{ backgroundColor: "#16A34A", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
-                      onPress={() => handleExecuteDelivery("paid")}
-                    >
-                      <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
-                        💵 Collect Rs {deliveryTargetOrder.total_bill_amount || 0} Cash & Deliver
-                      </Text>
-                    </TouchableOpacity>
+                    {deliveryTargetOrder.payment_status === "paid" ? (
+                      <TouchableOpacity
+                        style={{ backgroundColor: "#16A34A", paddingVertical: 13, borderRadius: radius.xs, alignItems: "center" }}
+                        onPress={() => handleExecuteDelivery("paid")}
+                      >
+                        <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
+                          ✅ Deliver Order (Already Paid - Rs 0 Due)
+                        </Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <>
+                        <TouchableOpacity
+                          style={{ backgroundColor: "#16A34A", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
+                          onPress={() => handleExecuteDelivery("paid")}
+                        >
+                          <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
+                            💵 Collect Rs {deliveryTargetOrder.total_bill_amount || 0} Cash & Deliver
+                          </Text>
+                        </TouchableOpacity>
 
-                    <TouchableOpacity
-                      style={{ backgroundColor: "#D97706", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
-                      onPress={() => handleExecuteDelivery("unpaid")}
-                    >
-                      <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
-                        ⌛ Deliver on Customer Account (Mark Unpaid)
-                      </Text>
-                    </TouchableOpacity>
+                        <TouchableOpacity
+                          style={{ backgroundColor: "#D97706", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
+                          onPress={() => handleExecuteDelivery("unpaid")}
+                        >
+                          <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
+                            ⌛ Deliver on Customer Account (Mark Unpaid)
+                          </Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
 
                     <TouchableOpacity
                       style={{ paddingVertical: 8, alignItems: "center", marginTop: 4 }}

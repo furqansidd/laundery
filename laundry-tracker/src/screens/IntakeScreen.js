@@ -31,12 +31,16 @@ import {
   fetchCustomerOrders,
   getCustomerLedger,
   recordCustomerPayment,
+  fetchPriorityTiers,
+  DEFAULT_PRIORITY_TIERS,
 } from "../lib/ordersApi";
 import { supabase } from "../lib/supabase";
 import {
   buildReceiptMessage,
   sendWhatsAppReceipt,
   sharePdfInvoiceWithPhotos,
+  shareInvoiceSlipPdf,
+  printInvoiceSlip,
 } from "../utils/whatsapp";
 import { printBarcodeLabel } from "../utils/print";
 
@@ -69,8 +73,9 @@ export default function IntakeScreen({ navigation }) {
   const [quantities, setQuantities] = useState({}); // { item_type_id: qty }
   const [serviceTypes, setServiceTypes] = useState({}); // { item_type_id: service_type }
   const [unitTypes, setUnitTypes] = useState({}); // { item_type_id: unit_type }
-  const [orderType, setOrderType] = useState("normal"); // "normal" | "express" | "urgent"
-  const [slaTier, setSlaTier] = useState("standard_48_72h"); // "express_2_4h" | "fast_24h" | "standard_48_72h"
+  const [priorityTiers, setPriorityTiers] = useState(DEFAULT_PRIORITY_TIERS);
+  const [orderType, setOrderType] = useState("normal"); // "normal" | "express" | "urgent" | "instant"
+  const [slaTier, setSlaTier] = useState("standard_48_72h"); // "instant_2h" | "express_2_4h" | "fast_24h" | "standard_48_72h"
   const [tagsCount, setTagsCount] = useState(1); // Dynamic 1 to N physical hanger tags
   const [paymentStatus, setPaymentStatus] = useState("unpaid"); // "unpaid" | "paid"
   const [deliveryDate, setDeliveryDate] = useState("Tomorrow");
@@ -119,6 +124,13 @@ export default function IntakeScreen({ navigation }) {
         .then(setItemTypes)
         .catch((e) => console.log("Garment fetch error:", e));
       loadAllCustomersCache();
+      fetchPriorityTiers()
+        .then((tiers) => {
+          if (Array.isArray(tiers) && tiers.length > 0) {
+            setPriorityTiers(tiers);
+          }
+        })
+        .catch((e) => console.log("Priorities fetch error:", e));
     }, [])
   );
 
@@ -222,7 +234,7 @@ export default function IntakeScreen({ navigation }) {
     }
   };
 
-  const handleRecordKhataPayment = async () => {
+  const handleRecordLedgerPayment = async () => {
     if (!phone || !settleAmount) return;
     const amt = Number(settleAmount) || 0;
     if (amt <= 0) {
@@ -421,48 +433,45 @@ export default function IntakeScreen({ navigation }) {
   const handleSelectOrderType = (typeKey) => {
     setOrderType(typeKey);
     const now = new Date();
+    const tier = priorityTiers.find((t) => t.key === typeKey);
+    const hours =
+      tier?.hours ||
+      (typeKey === "instant"
+        ? 2
+        : typeKey === "urgent"
+        ? 4
+        : typeKey === "express"
+        ? 24
+        : 48);
 
-    if (typeKey === "urgent") {
-      setSlaTier("express_2_4h");
-      const today = new Date();
-      setDatePickerValue(today);
-      const urgentTime = new Date(now.getTime() + 3 * 60 * 60 * 1000);
-      setTimePickerValue(urgentTime);
-
-      setDeliveryDate(formatDateFormatted(today));
-      setDeliveryTimeSlot(`${formatTimeFormatted(urgentTime)} (Next 3 Hrs)`);
-    } else if (typeKey === "express") {
+    if (hours <= 4) {
+      setSlaTier(hours <= 2 ? "instant_2h" : "express_2_4h");
+    } else if (hours <= 24) {
       setSlaTier("fast_24h");
-      const today = new Date();
-      setDatePickerValue(today);
-      const expressTime = new Date();
-      expressTime.setHours(18, 0, 0, 0);
-      setTimePickerValue(expressTime);
-
-      setDeliveryDate(formatDateFormatted(today));
-      setDeliveryTimeSlot(`${formatTimeFormatted(expressTime)} (Same Day)`);
     } else {
       setSlaTier("standard_48_72h");
-      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      setDatePickerValue(tomorrow);
-      const stdTime = new Date();
-      stdTime.setHours(17, 0, 0, 0);
-      setTimePickerValue(stdTime);
-
-      setDeliveryDate(formatDateFormatted(tomorrow));
-      setDeliveryTimeSlot(`${formatTimeFormatted(stdTime)} (Evening)`);
     }
+
+    const targetDate = new Date(now.getTime() + hours * 60 * 60 * 1000);
+    setDatePickerValue(targetDate);
+    setTimePickerValue(targetDate);
+
+    const isToday = targetDate.toDateString() === now.toDateString();
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const isTomorrow = targetDate.toDateString() === tomorrow.toDateString();
+
+    const dateLabel = isToday
+      ? `${formatDateFormatted(targetDate)} (Today)`
+      : isTomorrow
+      ? `${formatDateFormatted(targetDate)} (Tomorrow)`
+      : formatDateFormatted(targetDate);
+
+    setDeliveryDate(dateLabel);
+    setDeliveryTimeSlot(`${formatTimeFormatted(targetDate)} (${hours}h SLA)`);
   };
 
   const handleOpenDatePicker = () => {
     Keyboard.dismiss();
-    if (orderType === "express" || orderType === "urgent") {
-      Alert.alert(
-        "🔒 Date Auto-Locked",
-        `${orderType.toUpperCase()} orders are locked to Today's Date for same-day delivery.`
-      );
-      return;
-    }
     setShowDatePicker(true);
   };
 
@@ -584,9 +593,18 @@ export default function IntakeScreen({ navigation }) {
     });
   };
 
-  // Generate and share PDF invoice containing order details & both photos
+  // Generate and share PDF invoice containing order details & photos
   const handleSharePdfInvoice = async () => {
-    await sharePdfInvoiceWithPhotos({
+    await shareInvoiceSlipPdf({
+      order: createdOrder,
+      items: createdOrder?.items || [],
+      photoUrls: createdOrder?.intake_photo_urls || [],
+    });
+  };
+
+  // Directly print invoice slip to printer (AirPrint / POS / WiFi / PDF)
+  const handlePrintInvoiceSlip = async () => {
+    await printInvoiceSlip({
       order: createdOrder,
       items: createdOrder?.items || [],
       photoUrls: createdOrder?.intake_photo_urls || [],
@@ -737,33 +755,43 @@ export default function IntakeScreen({ navigation }) {
             </View>
           </View>
 
-          {/* Action Button 1: Send WhatsApp Text Receipt with Both Photos */}
+          {/* Action Button 1: Print Modern Invoice Slip */}
           <TouchableOpacity
-            style={[styles.primaryBtn, shadow, { marginTop: spacing.md, backgroundColor: "#25D366" }]}
-            onPress={handleSendWhatsAppReceipt}
+            style={[styles.primaryBtn, shadow, { marginTop: spacing.md, backgroundColor: "#0284C7" }]}
+            onPress={handlePrintInvoiceSlip}
           >
             <Text style={styles.primaryBtnText}>
-              💬 Send Receipt via WhatsApp
+              🖨️ Print Client Invoice Slip
             </Text>
           </TouchableOpacity>
 
-          {/* Action Button 2: Share Full PDF Invoice (with Both Photos Embedded) */}
+          {/* Action Button 2: Share PDF Invoice via WhatsApp */}
           <TouchableOpacity
-            style={[styles.primaryBtn, shadow, { marginTop: spacing.sm, backgroundColor: colors.primary }]}
+            style={[styles.primaryBtn, shadow, { marginTop: spacing.sm, backgroundColor: "#25D366" }]}
             onPress={handleSharePdfInvoice}
           >
             <Text style={styles.primaryBtnText}>
-              📄 Share PDF Receipt (with Both Photos)
+              📲 Share Invoice via WhatsApp
             </Text>
           </TouchableOpacity>
 
-          {/* Action Button 3: Print Barcode Tag */}
+          {/* Action Button 3: Send WhatsApp Text Receipt */}
+          <TouchableOpacity
+            style={[styles.primaryBtn, shadow, { marginTop: spacing.sm, backgroundColor: "#059669" }]}
+            onPress={handleSendWhatsAppReceipt}
+          >
+            <Text style={styles.primaryBtnText}>
+              💬 Send Text Receipt via WhatsApp
+            </Text>
+          </TouchableOpacity>
+
+          {/* Action Button 4: Print Barcode Hanger Sticker Tags */}
           <TouchableOpacity
             style={styles.printBtn}
             onPress={handlePrintBarcode}
           >
             <Text style={styles.printBtnText}>
-              🖨️ Print {createdOrder.tags_count || tagsCount || 1} Hanger Sticker Tags (70x48mm)
+              🏷️ Print {createdOrder.tags_count || tagsCount || 1} Hanger Tags (70x48mm)
             </Text>
           </TouchableOpacity>
 
@@ -1088,11 +1116,7 @@ export default function IntakeScreen({ navigation }) {
             <View>
               <Text style={styles.fieldLabel}>Order Speed & Priority</Text>
               <View style={styles.speedRow}>
-                {[
-                  { key: "normal", label: "Normal", icon: "📦", desc: "Standard" },
-                  { key: "express", label: "Express", icon: "⚡", desc: "Same Day" },
-                  { key: "urgent", label: "Urgent", icon: "🔥", desc: "Instant / 2-4 hrs" },
-                ].map((sp) => {
+                {priorityTiers.map((sp) => {
                   const active = orderType === sp.key;
                   return (
                     <TouchableOpacity
@@ -1102,7 +1126,7 @@ export default function IntakeScreen({ navigation }) {
                     >
                       <Text style={styles.speedIcon}>{sp.icon}</Text>
                       <Text style={[styles.speedLabel, active && styles.speedLabelActive]}>{sp.label}</Text>
-                      <Text style={styles.speedDesc}>{sp.desc}</Text>
+                      <Text style={styles.speedDesc}>{sp.desc || `${sp.hours}h`}</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -1344,7 +1368,7 @@ export default function IntakeScreen({ navigation }) {
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ flex: 1, paddingVertical: 10, borderRadius: radius.xs, backgroundColor: "#D97706", alignItems: "center" }}
-                onPress={handleRecordKhataPayment}
+                onPress={handleRecordLedgerPayment}
               >
                 <Text style={{ fontWeight: "800", color: "#FFF" }}>Collect & Record</Text>
               </TouchableOpacity>

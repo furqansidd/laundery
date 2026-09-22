@@ -17,6 +17,7 @@ import {
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { colors, radius, spacing, typography, shadow } from "../theme";
 import { fetchOrderByCode, logSortingScan, markReadyForDelivery, markOrderDeliveredWithPayment } from "../lib/ordersApi";
+import { sendOrderReadyWhatsApp } from "../utils/whatsapp";
 
 import PhotoViewerModal from "../components/PhotoViewerModal";
 
@@ -147,9 +148,20 @@ export default function SortingScreen({ route }) {
     setMarking(true);
     try {
       await markReadyForDelivery(result.order.id, "staff");
-      Alert.alert("Marked Ready for Delivery", result.order.order_code, [
-        { text: "Scan next basket", onPress: resetToScan },
-      ]);
+      Alert.alert(
+        "Order Ready! 📦",
+        `Order ${result.order.order_code} marked Ready! Send WhatsApp notification to customer?`,
+        [
+          { text: "Later", onPress: resetToScan },
+          {
+            text: "📲 Send WhatsApp",
+            onPress: async () => {
+              await sendOrderReadyWhatsApp(result.order);
+              resetToScan();
+            },
+          },
+        ]
+      );
     } catch (e) {
       Alert.alert("Couldn't update status", e.message);
     } finally {
@@ -173,7 +185,7 @@ export default function SortingScreen({ route }) {
         "Order Delivered! 🚚",
         payStatus === "paid"
           ? `Collected Rs ${bill} cash & marked order PAID!`
-          : `Order delivered and added to customer's Udhaar Khata.`
+          : `Order delivered and added to customer's Ledger Account.`
       );
       resetToScan();
     } catch (e) {
@@ -469,11 +481,15 @@ export default function SortingScreen({ route }) {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.primaryBtn, shadow, { backgroundColor: "#334155", paddingVertical: 14 }]}
+              style={[
+                styles.primaryBtn,
+                shadow,
+                { backgroundColor: order.payment_status === "paid" ? "#16A34A" : "#334155", paddingVertical: 14 },
+              ]}
               onPress={() => setDeliverModalVisible(true)}
             >
               <Text style={[styles.primaryBtnText, { fontSize: 15 }]}>
-                🚚 Deliver Order & Collect Cash
+                {order.payment_status === "paid" ? "🚚 Deliver Order (Already Paid)" : "🚚 Deliver Order & Collect Cash"}
               </Text>
             </TouchableOpacity>
           </View>
@@ -499,7 +515,9 @@ export default function SortingScreen({ route }) {
         >
           <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 20 }}>
             <View style={{ width: "100%", maxWidth: 360, backgroundColor: "#FFF", borderRadius: radius.md, padding: 20, ...shadow.md }}>
-              <Text style={{ fontSize: 18, fontWeight: "800", color: colors.text, marginBottom: 4 }}>🚚 Order Delivery & Cash Collection</Text>
+              <Text style={{ fontSize: 18, fontWeight: "800", color: colors.text, marginBottom: 4 }}>
+                {order.payment_status === "paid" ? "🚚 Confirm Order Delivery" : "🚚 Order Delivery & Cash Collection"}
+              </Text>
               <Text style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>
                 Order Code: {order.order_code} • Customer: {order.customers?.name || order.customers?.phone_number}
               </Text>
@@ -525,23 +543,36 @@ export default function SortingScreen({ route }) {
                 <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: 20 }} />
               ) : (
                 <View style={{ gap: 10 }}>
-                  <TouchableOpacity
-                    style={{ backgroundColor: "#16A34A", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
-                    onPress={() => handleExecuteDelivery("paid")}
-                  >
-                    <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
-                      💵 Collect Rs {order.total_bill_amount || 0} Cash & Deliver
-                    </Text>
-                  </TouchableOpacity>
+                  {order.payment_status === "paid" ? (
+                    <TouchableOpacity
+                      style={{ backgroundColor: "#16A34A", paddingVertical: 13, borderRadius: radius.xs, alignItems: "center" }}
+                      onPress={() => handleExecuteDelivery("paid")}
+                    >
+                      <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
+                        ✅ Deliver Order (Already Paid - Rs 0 Due)
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <>
+                      <TouchableOpacity
+                        style={{ backgroundColor: "#16A34A", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
+                        onPress={() => handleExecuteDelivery("paid")}
+                      >
+                        <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
+                          💵 Collect Rs {order.total_bill_amount || 0} Cash & Deliver
+                        </Text>
+                      </TouchableOpacity>
 
-                  <TouchableOpacity
-                    style={{ backgroundColor: "#D97706", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
-                    onPress={() => handleExecuteDelivery("unpaid")}
-                  >
-                    <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
-                      ⌛ Deliver on Customer Account (Mark Unpaid)
-                    </Text>
-                  </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{ backgroundColor: "#D97706", paddingVertical: 12, borderRadius: radius.xs, alignItems: "center" }}
+                        onPress={() => handleExecuteDelivery("unpaid")}
+                      >
+                        <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "800" }}>
+                          ⌛ Deliver on Customer Account (Mark Unpaid)
+                        </Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
 
                   <TouchableOpacity
                     style={{ paddingVertical: 8, alignItems: "center", marginTop: 4 }}

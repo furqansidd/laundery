@@ -23,11 +23,13 @@ import {
   fetchAllCustomers,
   getCustomerLedger,
   recordCustomerPayment,
+  fetchPriorityTiers,
+  updatePriorityTier,
 } from "../lib/ordersApi";
 import { sendCustomerLedgerWhatsApp } from "../utils/whatsapp";
 
 export default function SettingsScreen() {
-  const [activeTab, setActiveTab] = useState("services"); // "services" | "khata"
+  const [activeTab, setActiveTab] = useState("services"); // "services" | "ledger" | "priorities"
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
@@ -54,10 +56,20 @@ export default function SettingsScreen() {
   const [paymentNote, setPaymentNote] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
 
+  // Priorities & SLA Timing State
+  const [prioritiesList, setPrioritiesList] = useState([]);
+  const [prioritiesLoading, setPrioritiesLoading] = useState(false);
+  const [editingPriority, setEditingPriority] = useState(null);
+  const [editPriorityHours, setEditPriorityHours] = useState("");
+  const [editPriorityDesc, setEditPriorityDesc] = useState("");
+  const [priorityModalVisible, setPriorityModalVisible] = useState(false);
+  const [savingPriority, setSavingPriority] = useState(false);
+
   useFocusEffect(
     useCallback(() => {
       loadServices();
       loadCustomers();
+      loadPriorities();
     }, [])
   );
 
@@ -82,6 +94,49 @@ export default function SettingsScreen() {
       console.log("Error loading customers:", err);
     } finally {
       setCustLoading(false);
+    }
+  };
+
+  const loadPriorities = async () => {
+    setPrioritiesLoading(true);
+    try {
+      const list = await fetchPriorityTiers();
+      setPrioritiesList(list || []);
+    } catch (err) {
+      console.log("Error loading priorities:", err);
+    } finally {
+      setPrioritiesLoading(false);
+    }
+  };
+
+  const handleOpenEditPriority = (tier) => {
+    setEditingPriority(tier);
+    setEditPriorityHours(String(tier.hours || 1));
+    setEditPriorityDesc(tier.desc || "");
+    setPriorityModalVisible(true);
+  };
+
+  const handleSavePriority = async () => {
+    if (!editingPriority) return;
+    const h = Number(editPriorityHours);
+    if (!h || h <= 0) {
+      Alert.alert("Invalid Hours", "Please enter a valid number of turnaround hours.");
+      return;
+    }
+    setSavingPriority(true);
+    try {
+      const updated = await updatePriorityTier(editingPriority.key, {
+        hours: h,
+        desc: editPriorityDesc.trim() || `${h} Hours turnaround`,
+        badge: `${h} Hours`,
+      });
+      setPrioritiesList(updated);
+      setPriorityModalVisible(false);
+      Alert.alert("Priority Updated", `${editingPriority.label} turnaround timing updated to ${h} Hours!`);
+    } catch (e) {
+      Alert.alert("Update Failed", e.message);
+    } finally {
+      setSavingPriority(false);
     }
   };
 
@@ -112,7 +167,7 @@ export default function SettingsScreen() {
       await recordCustomerPayment({
         phoneNumber: selectedCust.phone_number,
         amount: amt,
-        note: paymentNote.trim() || "Recorded on Khata Ledger",
+        note: paymentNote.trim() || "Recorded on Customer Ledger",
         createdBy: "staff",
       });
       Alert.alert("Payment Saved", `Recorded Rs ${amt} cash payment for ${selectedCust.name || selectedCust.phone_number}!`);
@@ -245,24 +300,35 @@ export default function SettingsScreen() {
           onPress={() => setActiveTab("services")}
         >
           <Text style={[styles.tabBtnText, activeTab === "services" && styles.tabBtnTextActive]}>
-            ⚙️ Services & Pricing ({services.length})
+            ⚙️ Services ({services.length})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.tabBtn, activeTab === "khata" && styles.tabBtnActive]}
+          style={[styles.tabBtn, activeTab === "ledger" && styles.tabBtnActive]}
           onPress={() => {
-            setActiveTab("khata");
+            setActiveTab("ledger");
             loadCustomers();
           }}
         >
-          <Text style={[styles.tabBtnText, activeTab === "khata" && styles.tabBtnTextActive]}>
-            📖 Customer Ledgers ({customersList.length})
+          <Text style={[styles.tabBtnText, activeTab === "ledger" && styles.tabBtnTextActive]}>
+            📖 Ledgers ({customersList.length})
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tabBtn, activeTab === "priorities" && styles.tabBtnActive]}
+          onPress={() => {
+            setActiveTab("priorities");
+            loadPriorities();
+          }}
+        >
+          <Text style={[styles.tabBtnText, activeTab === "priorities" && styles.tabBtnTextActive]}>
+            ⚡ Priorities ({prioritiesList.length})
           </Text>
         </TouchableOpacity>
       </View>
 
-      {activeTab === "services" ? (
-        <>
+      {activeTab === "services" && (
+        <View style={{ flex: 1 }}>
           {/* Services Action Bar */}
           <View style={styles.actionBar}>
             <Text style={styles.sectionTitle}>Services & Rates</Text>
@@ -342,9 +408,11 @@ export default function SettingsScreen() {
               })}
             </ScrollView>
           )}
-        </>
-      ) : (
-        /* CUSTOMER KHATA LEDGER TAB */
+        </View>
+      )}
+
+      {/* CUSTOMER LEDGER TAB */}
+      {activeTab === "ledger" && (
         <View style={{ flex: 1 }}>
           {/* Customer Search Bar */}
           <View style={{ paddingHorizontal: 20, paddingTop: 12, paddingBottom: 8 }}>
@@ -369,7 +437,7 @@ export default function SettingsScreen() {
                   <Text style={{ fontSize: 32, marginBottom: 8 }}>📖</Text>
                   <Text style={typography.h2}>No Customers Found</Text>
                   <Text style={typography.caption}>
-                    Customers created during intake will appear here with full Khata history.
+                    Customers created during intake will appear here with full Ledger history.
                   </Text>
                 </View>
               ) : (
@@ -390,13 +458,70 @@ export default function SettingsScreen() {
                       </View>
                       <View style={styles.ledgerActionBadge}>
                         <Text style={{ fontSize: 11, fontWeight: "800", color: colors.primary }}>
-                          📖 View Khata ➔
+                          📖 View Ledger ➔
                         </Text>
                       </View>
                     </View>
                   </TouchableOpacity>
                 ))
               )}
+            </ScrollView>
+          )}
+        </View>
+      )}
+
+      {/* Priorities & SLA Turnaround Tab */}
+      {activeTab === "priorities" && (
+        <View style={{ flex: 1 }}>
+          <View style={styles.actionBar}>
+            <View>
+              <Text style={styles.sectionTitle}>Order Priorities & SLA</Text>
+              <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+                Turnaround hours auto-calculate delivery promises on Intake
+              </Text>
+            </View>
+          </View>
+
+          {prioritiesLoading ? (
+            <View style={styles.centerContainer}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.loadingText}>Loading priorities...</Text>
+            </View>
+          ) : (
+            <ScrollView contentContainerStyle={styles.scrollContent}>
+              {prioritiesList.map((tier) => (
+                <View key={tier.key} style={styles.priorityCard}>
+                  <View style={styles.priorityCardHeader}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1 }}>
+                      <Text style={{ fontSize: 26 }}>{tier.icon}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 16, fontWeight: "800", color: colors.text }}>
+                          {tier.label}
+                        </Text>
+                        <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+                          {tier.desc}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.hoursBadge}>
+                      <Text style={styles.hoursBadgeText}>⏱️ {tier.hours}h SLA</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.priorityCardFooter}>
+                    <Text style={{ fontSize: 11, color: colors.textMuted }}>
+                      Promise Formula: Current Time + {tier.hours} Hours
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.editPriorityBtn}
+                      onPress={() => handleOpenEditPriority(tier)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.editPriorityBtnText}>✏️ Edit Timing</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
             </ScrollView>
           )}
         </View>
@@ -478,6 +603,62 @@ export default function SettingsScreen() {
         </View>
       </Modal>
 
+      {/* Edit Priority Turnaround Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={priorityModalVisible}
+        onRequestClose={() => setPriorityModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>
+              {editingPriority?.icon} Edit {editingPriority?.label} Timing
+            </Text>
+
+            <Text style={styles.inputLabel}>Turnaround Timing (in Hours)</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="e.g. 2, 4, 24"
+              placeholderTextColor={colors.textMuted}
+              value={editPriorityHours}
+              onChangeText={setEditPriorityHours}
+              keyboardType="numeric"
+              autoFocus
+            />
+
+            <Text style={styles.inputLabel}>Description / Subtitle</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="e.g. Rush delivery (4 hrs)"
+              placeholderTextColor={colors.textMuted}
+              value={editPriorityDesc}
+              onChangeText={setEditPriorityDesc}
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setPriorityModalVisible(false)}
+              >
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.confirmBtn}
+                onPress={handleSavePriority}
+                disabled={savingPriority}
+              >
+                {savingPriority ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.confirmBtnText}>Save SLA Timing</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Customer Khata Ledger Detail Modal */}
       {selectedCust && (
         <Modal
@@ -503,7 +684,7 @@ export default function SettingsScreen() {
             {ledgerLoading ? (
               <View style={styles.centerContainer}>
                 <ActivityIndicator size="large" color={colors.primary} />
-                <Text style={styles.loadingText}>Calculating Khata Ledger...</Text>
+                <Text style={styles.loadingText}>Calculating Customer Ledger...</Text>
               </View>
             ) : (
               <ScrollView contentContainerStyle={{ padding: 20 }}>
@@ -592,7 +773,7 @@ export default function SettingsScreen() {
 
                 {/* Order & Transaction History Breakdown */}
                 <Text style={{ fontSize: 16, fontWeight: "800", color: colors.text, marginTop: 16, marginBottom: 10 }}>
-                  📋 Khata Timeline & Order History
+                  📋 Ledger Timeline & Order History
                 </Text>
 
                 {(() => {
@@ -640,7 +821,7 @@ export default function SettingsScreen() {
                             </View>
                             <View style={[styles.paymentBadge, { backgroundColor: ord.payment_status === "paid" ? "#DCFCE7" : "#FEF3C7" }]}>
                               <Text style={{ fontSize: 11, fontWeight: "800", color: ord.payment_status === "paid" ? "#15803D" : "#B45309" }}>
-                                {ord.payment_status === "paid" ? "💳 PAID CASH" : "⌛ UNPAID KHATA"}
+                                {ord.payment_status === "paid" ? "💳 PAID CASH" : "⌛ UNPAID ACCOUNT"}
                               </Text>
                             </View>
                           </View>
@@ -1132,5 +1313,54 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: radius.pill,
+  },
+  priorityCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadow.sm,
+  },
+  priorityCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  hoursBadge: {
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  hoursBadgeText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: colors.primary,
+  },
+  priorityCardFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  editPriorityBtn: {
+    backgroundColor: colors.surfaceHover,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  editPriorityBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.primary,
   },
 });

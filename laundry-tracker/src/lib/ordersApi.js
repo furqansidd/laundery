@@ -4,7 +4,45 @@ import { decode } from "base64-arraybuffer";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const SERVICES_STORAGE_KEY = "@laundry_tracker_services";
-const LOCAL_ORDERS_STORE = [];
+const PRIORITIES_STORAGE_KEY = "@laundry_tracker_priorities";
+const ORDERS_STORAGE_KEY = "@laundry_tracker_orders";
+let LOCAL_ORDERS_STORE = [];
+let ordersLoadedFromStorage = false;
+
+export async function ensureLocalOrdersLoaded() {
+  if (ordersLoadedFromStorage && LOCAL_ORDERS_STORE.length > 0) return;
+  try {
+    const raw = await AsyncStorage.getItem(ORDERS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // Merge without duplicates
+        const map = new Map();
+        parsed.forEach((o) => { if (o && o.order_code) map.set(o.order_code, o); });
+        LOCAL_ORDERS_STORE.forEach((o) => { if (o && o.order_code) map.set(o.order_code, o); });
+        LOCAL_ORDERS_STORE = Array.from(map.values());
+      }
+    }
+  } catch (e) {
+    console.log("Error loading orders from AsyncStorage:", e);
+  }
+  ordersLoadedFromStorage = true;
+}
+
+export async function saveLocalOrdersToStorage() {
+  try {
+    await AsyncStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(LOCAL_ORDERS_STORE));
+  } catch (e) {
+    console.log("Error saving orders to AsyncStorage:", e);
+  }
+}
+
+export const DEFAULT_PRIORITY_TIERS = [
+  { key: "instant", label: "Instant", icon: "⚡", hours: 2, desc: "Instant / 2-3 hrs", badge: "2 Hours" },
+  { key: "urgent", label: "Urgent", icon: "🔥", hours: 4, desc: "Rush delivery (4 hrs)", badge: "4 Hours" },
+  { key: "express", label: "Express", icon: "🚀", hours: 24, desc: "Same day / 24 hrs", badge: "24 Hours" },
+  { key: "normal", label: "Normal", icon: "📦", hours: 48, desc: "Standard (48 hrs)", badge: "48 Hours" },
+];
 
 const DEFAULT_ITEM_TYPES = [
   { id: 1, name: "Shirt", unit_type: "piece", default_price: 40, sort_order: 1 },
@@ -414,7 +452,7 @@ export async function recordCustomerPayment({ phoneNumber, amount, note = "", cr
     const bill = Number(ord.total_bill_amount) || 0;
     if (remainingPay >= bill) {
       try {
-        await updateOrderStatus(ord.id, ord.status, "Paid via Khata payment", createdBy);
+        await updateOrderStatus(ord.id, ord.status, "Paid via Ledger payment", createdBy);
         await supabase.from("orders").update({ payment_status: "paid" }).eq("id", ord.id);
         ord.payment_status = "paid";
       } catch (e) {}
@@ -547,6 +585,7 @@ export async function createOrder({
 
   // Add to local in-memory store
   LOCAL_ORDERS_STORE.unshift(fullOrderObj);
+  await saveLocalOrdersToStorage();
 
   return { order: fullOrderObj, customer };
 }
@@ -607,6 +646,7 @@ export async function markBasketTagged(orderId, basketLabel, createdBy) {
     match.status = "washing";
     match.basket_label = basketLabel;
   }
+  await saveLocalOrdersToStorage();
 }
 
 export async function markReadyForDelivery(orderId, createdBy) {
@@ -622,6 +662,7 @@ export async function markReadyForDelivery(orderId, createdBy) {
     match.status = "ready_for_delivery";
     match.ready_at = new Date().toISOString();
   }
+  await saveLocalOrdersToStorage();
 }
 
 export async function logSortingScan(orderId, createdBy) {
@@ -629,8 +670,8 @@ export async function logSortingScan(orderId, createdBy) {
 }
 
 /** Fetch all orders with customer details and line items for Order History */
-/** Fetch all orders with customer details and line items for Order History */
 export async function fetchAllOrders(statusFilter = "all", searchQuery = "") {
+  await ensureLocalOrdersLoaded();
   let dbOrders = [];
   try {
     const { data, error } = await supabase
@@ -715,6 +756,7 @@ export async function updateOrderStatus(orderId, newStatus, note = "", createdBy
     if (newStatus === "ready_for_delivery") match.ready_at = new Date().toISOString();
     if (newStatus === "delivered") match.delivered_at = new Date().toISOString();
   }
+  await saveLocalOrdersToStorage();
 
   try {
     await logEvent(orderId, newStatus, note || `Status updated to ${newStatus}`, createdBy);
@@ -729,14 +771,17 @@ export async function moveServiceStage(orderId, serviceKey, createdBy = "staff")
     try {
       const { data } = await supabase
         .from("orders")
-        .select("*, order_items(service_type)")
+        .select("*, customers(phone_number, name), order_items(quantity, unit_price, service_type, item_types(name))")
         .eq("id", orderId)
         .maybeSingle();
-      if (data) match = data;
+      if (data) {
+        match = data;
+        LOCAL_ORDERS_STORE.unshift(match);
+      }
     } catch (e) {}
   }
 
-  if (!match) return;
+  if (!match) return null;
 
   if (!Array.isArray(match.moved_services)) {
     match.moved_services = [];
@@ -763,6 +808,7 @@ export async function moveServiceStage(orderId, serviceKey, createdBy = "staff")
   }
 
   match.status = newStatus;
+  await saveLocalOrdersToStorage();
 
   try {
     await supabase
@@ -779,6 +825,8 @@ export async function moveServiceStage(orderId, serviceKey, createdBy = "staff")
       createdBy
     );
   } catch (e) {}
+
+  return match;
 }
 
 /** Mark a specific service stage completed/ready for an order */
@@ -789,14 +837,17 @@ export async function completeServiceStage(orderId, serviceKey, createdBy = "sta
     try {
       const { data } = await supabase
         .from("orders")
-        .select("*, order_items(service_type)")
+        .select("*, customers(phone_number, name), order_items(quantity, unit_price, service_type, item_types(name))")
         .eq("id", orderId)
         .maybeSingle();
-      if (data) match = data;
+      if (data) {
+        match = data;
+        LOCAL_ORDERS_STORE.unshift(match);
+      }
     } catch (e) {}
   }
 
-  if (!match) return;
+  if (!match) return null;
 
   if (!Array.isArray(match.completed_services)) {
     match.completed_services = [];
@@ -824,6 +875,8 @@ export async function completeServiceStage(orderId, serviceKey, createdBy = "sta
     updates.status = "ready_for_delivery";
     updates.ready_at = match.ready_at;
   }
+
+  await saveLocalOrdersToStorage();
 
   try {
     await supabase.from("orders").update(updates).eq("id", orderId);
@@ -859,6 +912,7 @@ export async function markOrderDeliveredWithPayment({ orderId, paymentStatus = "
     match.payment_status = paymentStatus;
     match.delivered_at = new Date().toISOString();
   }
+  await saveLocalOrdersToStorage();
 
   // If cash collected, record a ledger payment if cashAmount > 0
   const phone = match?.customers?.phone_number;
@@ -876,3 +930,47 @@ export async function markOrderDeliveredWithPayment({ orderId, paymentStatus = "
   } catch (e) {}
 }
 
+/** Fetch priority turnaround tiers with local AsyncStorage caching */
+export async function fetchPriorityTiers() {
+  try {
+    const cached = await AsyncStorage.getItem(PRIORITIES_STORAGE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.log("AsyncStorage read error for priorities:", err);
+  }
+
+  // Fallback to default priority tiers and persist
+  try {
+    await AsyncStorage.setItem(PRIORITIES_STORAGE_KEY, JSON.stringify(DEFAULT_PRIORITY_TIERS));
+  } catch (e) {}
+  return DEFAULT_PRIORITY_TIERS;
+}
+
+/** Save updated priority tiers list */
+export async function savePriorityTiers(tiers) {
+  try {
+    await AsyncStorage.setItem(PRIORITIES_STORAGE_KEY, JSON.stringify(tiers));
+    return tiers;
+  } catch (err) {
+    console.log("Error saving priorities:", err);
+    throw err;
+  }
+}
+
+/** Update an individual priority tier */
+export async function updatePriorityTier(key, updates) {
+  const current = await fetchPriorityTiers();
+  const updated = current.map((t) => {
+    if (t.key === key) {
+      return { ...t, ...updates };
+    }
+    return t;
+  });
+  await savePriorityTiers(updated);
+  return updated;
+}
