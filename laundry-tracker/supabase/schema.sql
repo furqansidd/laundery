@@ -2,8 +2,8 @@
 -- Laundry Order Tracking & Verification System — Supabase Schema
 -- =============================================================
 -- Run this in the Supabase SQL editor (Project > SQL Editor > New query)
--- Requires the "pgcrypto" extension for gen_random_uuid() (enabled by default
--- on Supabase projects).
+
+create extension if not exists "pgcrypto";
 
 -- -------------------------------------------------------------
 -- 1. CUSTOMERS
@@ -17,12 +17,14 @@ create table if not exists customers (
   created_at timestamptz not null default now()
 );
 
+create index if not exists idx_customers_phone on customers(phone_number);
+
 -- -------------------------------------------------------------
 -- 1B. CUSTOMER PAYMENTS (Ledger Settlements)
 -- -------------------------------------------------------------
 create table if not exists customer_payments (
-  id uuid primary key default gen_random_uuid(),
-  customer_id uuid not null references customers(id) on delete cascade,
+  id text primary key,
+  customer_phone text not null,
   amount numeric(10,2) not null default 0,
   payment_mode text default 'cash',
   note text,
@@ -30,46 +32,47 @@ create table if not exists customer_payments (
   created_at timestamptz not null default now()
 );
 
+create index if not exists idx_payments_phone on customer_payments(customer_phone);
+
 -- -------------------------------------------------------------
 -- 2. ORDERS
 -- -------------------------------------------------------------
--- order_code is the short human-readable code encoded in the barcode
--- (e.g. "LN-240815-0007"). This is what gets scanned at sorting time.
 create table if not exists orders (
   id uuid primary key default gen_random_uuid(),
   order_code text not null unique,
   customer_id uuid not null references customers(id) on delete restrict,
-  status text not null default 'intake'
-    check (status in ('intake', 'washing', 'sorting', 'ready_for_delivery', 'delivered', 'cancelled')),
-  order_type text not null default 'normal' check (order_type in ('normal', 'express', 'urgent')),
-  sla_tier text not null default 'standard_48_72h' check (sla_tier in ('express_2_4h', 'fast_24h', 'standard_48_72h')),
+  status text not null default 'intake',
+  order_type text not null default 'normal',
+  sla_tier text not null default 'standard_48_72h',
   target_timestamp timestamptz,
-  payment_status text not null default 'unpaid' check (payment_status in ('paid', 'unpaid', 'partial')),
+  payment_status text not null default 'unpaid',
   tags_count int not null default 1,
   delivery_date date,
   delivery_time_slot text,
   total_item_count int not null default 0,
   total_bill_amount numeric(10,2) not null default 0,
-  intake_photo_urls text[] not null default '{}',   -- the 2 wide-angle photos
-  basket_label text,                                 -- which physical basket it was assigned to
-  created_by text,                                    -- staff name/id who created it
+  intake_photo_urls text[] not null default '{}',
+  basket_label text,
+  moved_services text[] not null default '{}',
+  completed_services text[] not null default '{}',
+  created_by text default 'staff',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   ready_at timestamptz,
   delivered_at timestamptz
 );
 
+create index if not exists idx_orders_code on orders(order_code);
 create index if not exists idx_orders_status on orders(status);
 create index if not exists idx_orders_customer on orders(customer_id);
-create index if not exists idx_orders_type on orders(order_type);
 
 -- -------------------------------------------------------------
--- 3. ITEM TYPES (reference list for the tap-counter UI)
+-- 3. ITEM TYPES (Services list)
 -- -------------------------------------------------------------
 create table if not exists item_types (
   id serial primary key,
-  name text not null unique,          -- e.g. "Shirt", "Pant", "Bed Sheet", "Quilt (Kg)"
-  unit_type text not null default 'piece' check (unit_type in ('piece', 'pair', 'bundle', 'kg')),
+  name text not null unique,
+  unit_type text not null default 'piece',
   default_price numeric(10,2) not null default 0,
   sort_order int not null default 0
 );
@@ -88,15 +91,15 @@ insert into item_types (name, unit_type, default_price, sort_order) values
 on conflict (name) do nothing;
 
 -- -------------------------------------------------------------
--- 4. ORDER ITEMS (the tapped counts per order)
+-- 4. ORDER ITEMS
 -- -------------------------------------------------------------
 create table if not exists order_items (
   id uuid primary key default gen_random_uuid(),
   order_id uuid not null references orders(id) on delete cascade,
   item_type_id int not null references item_types(id),
-  service_type text not null default 'wash_press' check (service_type in ('wash_press', 'press_only', 'dry_clean', 'wash_fold')),
-  unit_type text not null default 'piece' check (unit_type in ('piece', 'pair', 'bundle', 'kg')),
-  quantity int not null default 1 check (quantity >= 0),
+  service_type text not null default 'wash_press',
+  unit_type text not null default 'piece',
+  quantity int not null default 1,
   weight_kg numeric(8,2) default 0,
   pair_count int default 0,
   unit_price numeric(10,2) not null default 0
@@ -105,12 +108,12 @@ create table if not exists order_items (
 create index if not exists idx_order_items_order on order_items(order_id);
 
 -- -------------------------------------------------------------
--- 5. ORDER EVENTS (audit trail — every scan / status change)
+-- 5. ORDER EVENTS (Audit log)
 -- -------------------------------------------------------------
 create table if not exists order_events (
   id uuid primary key default gen_random_uuid(),
   order_id uuid not null references orders(id) on delete cascade,
-  event_type text not null,   -- 'created' | 'receipt_sent' | 'basket_tagged' | 'scanned_at_sorting' | 'marked_ready' | 'delivered'
+  event_type text not null,
   note text,
   created_by text,
   created_at timestamptz not null default now()
@@ -119,24 +122,7 @@ create table if not exists order_events (
 create index if not exists idx_order_events_order on order_events(order_id);
 
 -- -------------------------------------------------------------
--- 6. STORAGE BUCKET for intake photos
--- -------------------------------------------------------------
-insert into storage.buckets (id, name, public)
-values ('intake-photos', 'intake-photos', true)
-on conflict (id) do nothing;
-
--- Public read (needed so the WhatsApp link / sorting screen can load images),
--- authenticated write.
-create policy if not exists "Public can view intake photos"
-  on storage.objects for select
-  using (bucket_id = 'intake-photos');
-
-create policy if not exists "Authenticated staff can upload intake photos"
-  on storage.objects for insert
-  with check (bucket_id = 'intake-photos' and auth.role() = 'authenticated');
-
--- -------------------------------------------------------------
--- 7. HELPER: auto-generate order_code (LN-YYMMDD-####)
+-- 6. ORDER CODE GENERATOR
 -- -------------------------------------------------------------
 create sequence if not exists order_code_seq;
 
@@ -151,7 +137,7 @@ end;
 $$ language plpgsql;
 
 -- -------------------------------------------------------------
--- 8. Keep updated_at fresh
+-- 7. KEEP UPDATED_AT FRESH
 -- -------------------------------------------------------------
 create or replace function touch_updated_at()
 returns trigger as $$
@@ -167,29 +153,30 @@ create trigger trg_orders_touch
   for each row execute function touch_updated_at();
 
 -- -------------------------------------------------------------
--- 9. Row Level Security
+-- 8. ROW LEVEL SECURITY (Allow anon app access)
 -- -------------------------------------------------------------
--- MVP note: all staff share one login (or use Supabase anonymous/staff auth).
--- These policies assume any authenticated staff user can read/write everything.
--- Tighten later with a `staff` role table if you need per-branch isolation.
-
 alter table customers enable row level security;
+alter table customer_payments enable row level security;
 alter table orders enable row level security;
 alter table order_items enable row level security;
 alter table order_events enable row level security;
 alter table item_types enable row level security;
 
-create policy if not exists "staff full access customers" on customers
-  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+-- Public / Anon access policies for app
+drop policy if exists "allow all access to customers" on customers;
+create policy "allow all access to customers" on customers for all using (true) with check (true);
 
-create policy if not exists "staff full access orders" on orders
-  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+drop policy if exists "allow all access to customer_payments" on customer_payments;
+create policy "allow all access to customer_payments" on customer_payments for all using (true) with check (true);
 
-create policy if not exists "staff full access order_items" on order_items
-  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+drop policy if exists "allow all access to orders" on orders;
+create policy "allow all access to orders" on orders for all using (true) with check (true);
 
-create policy if not exists "staff full access order_events" on order_events
-  for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+drop policy if exists "allow all access to order_items" on order_items;
+create policy "allow all access to order_items" on order_items for all using (true) with check (true);
 
-create policy if not exists "staff read item_types" on item_types
-  for select using (true);
+drop policy if exists "allow all access to order_events" on order_events;
+create policy "allow all access to order_events" on order_events for all using (true) with check (true);
+
+drop policy if exists "allow all access to item_types" on item_types;
+create policy "allow all access to item_types" on item_types for all using (true) with check (true);
